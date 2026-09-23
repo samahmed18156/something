@@ -54,27 +54,26 @@ st.set_page_config(page_title="Operations Workspace",
 
 CFG = IndicatorSettings()
 
-# Workplace-friendly labels. The underlying symbols and strategy names remain
-# unchanged so the analysis engine keeps working, but they are not exposed in
-# the Streamlit UI.
-ITEM_LABELS = {symbol: f"Item {i:02d}"
-               for i, symbol in enumerate(ALL_COINS, start=1)}
+# Clear, recognizable market labels. The page keeps a neutral Operations
+# Workspace title, while the selected market pairs remain visible so the
+# dashboard is understandable at a glance.
+ITEM_LABELS = {symbol: symbol for symbol in ALL_COINS}
 LABEL_TO_SYMBOL = {label: symbol for symbol, label in ITEM_LABELS.items()}
 ITEM_OPTIONS = [ITEM_LABELS[symbol] for symbol in ALL_COINS]
 DEFAULT_ITEM_OPTIONS = [ITEM_LABELS[symbol] for symbol in DEFAULT_COINS]
 GROUP_OPTIONS = {
-    "All items": [ITEM_LABELS[symbol] for symbol in ALL_COINS],
-    "Primary group": [ITEM_LABELS[symbol] for symbol in MAJORS],
-    "Secondary group": [ITEM_LABELS[symbol] for symbol in ALT_MAJORS],
-    "Recent group": [ITEM_LABELS[symbol] for symbol in TRENDING],
+    "All coins": [ITEM_LABELS[symbol] for symbol in ALL_COINS],
+    "Majors": [ITEM_LABELS[symbol] for symbol in MAJORS],
+    "Alt majors": [ITEM_LABELS[symbol] for symbol in ALT_MAJORS],
+    "Trending": [ITEM_LABELS[symbol] for symbol in TRENDING],
 }
 
 STATUS_LABEL = {
-    "STRONG BUY": "Priority Up",
-    "BUY": "Upward",
+    "STRONG BUY": "Strong positive",
+    "BUY": "Positive",
     "NEUTRAL": "Stable",
-    "SELL": "Downward",
-    "STRONG SELL": "Priority Down",
+    "SELL": "Negative",
+    "STRONG SELL": "Strong negative",
 }
 
 SIGNAL_STYLE = {
@@ -89,7 +88,7 @@ MTF_LABEL = {1: "Aligned ✅", -1: "Opposed ⚠️", 0: "Unavailable"}
 
 
 def display_item(symbol: str) -> str:
-    return ITEM_LABELS.get(symbol, "Item")
+    return ITEM_LABELS.get(symbol, symbol)
 
 
 def display_direction(direction: str) -> str:
@@ -110,10 +109,10 @@ def get_signal(symbol: str, timeframe: str, limit: int,
                        use_patterns=use_patterns)
 
 
-@st.cache_data(ttl=300, show_spinner="Scanning items…")
+@st.cache_data(ttl=300, show_spinner="Scanning the whole market board…")
 def market_board(symbols: tuple, timeframe: str, limit: int,
                  use_patterns: bool = False) -> pd.DataFrame:
-    """One row per item with neutral workplace-friendly labels."""
+    """One row per coin with recognizable names and readable factor columns."""
     rows = []
     for s in symbols:
         try:
@@ -124,66 +123,92 @@ def market_board(symbols: tuple, timeframe: str, limit: int,
                 pat_prefix = ("⛔ " if sig.pattern_vetoed else
                               "⚠ " if sig.patterns.bearish else
                               "✅ " if sig.patterns.bullish else "")
-                pat = pat_prefix + sig.patterns.names[0]
+                pat = pat_prefix + ", ".join(sig.patterns.names)
+            mtf_column = f"Trend {sig.mtf_timeframe or ''}".strip()
             rows.append({
-                "Item": display_item(s),
-                "Current value": f"{sig.close:,.6g}",
+                "Coin": display_item(s),
+                "Close (USDT)": f"{sig.close:,.6g}",
                 "Score": round(sig.score, 2),
-                "Positive factors": sig.bullish,
-                "Negative factors": sig.bearish,
+                "🟢 Positive": sig.bullish,
+                "🔴 Negative": sig.bearish,
                 "Status": f"{SIGNAL_STYLE[sig.final][1]} {STATUS_LABEL[sig.final]}",
-                "Secondary trend": MTF_LABEL[sig.mtf_trend],
-                "Environment": sig.regime,
-                "Event": "Detected" if sig.patterns and sig.patterns.names else "—",
-                "Filter": "Active" if (sig.pattern_vetoed or sig.filter_blocked) else "—",
-                "Variation": round(sig.atr_pct, 2),
+                mtf_column: MTF_LABEL[sig.mtf_trend],
+                "Regime": sig.regime,
+                "Pattern": pat or "—",
+                "ATR %": round(sig.atr_pct, 2),
             })
         except Exception:
-            rows.append({"Item": display_item(s), "Current value": "—",
-                         "Score": None, "Positive factors": 0, "Negative factors": 0,
-                         "Status": "⚠️ unavailable", "Secondary trend": "—",
-                         "Environment": "—", "Event": "—", "Filter": "—",
-                         "Variation": None})
+            mtf_column = f"Trend {PARENT_TIMEFRAME.get(timeframe, '')}".strip()
+            rows.append({
+                "Coin": display_item(s), "Close (USDT)": "—", "Score": None,
+                "🟢 Positive": 0, "🔴 Negative": 0, "Status": "⚠️ data unavailable",
+                mtf_column: "—", "Regime": "—", "Pattern": "—", "ATR %": None,
+            })
     return pd.DataFrame(rows)
 
 
 # ------------------------------------------------------------- rendering
 def price_chart(df: pd.DataFrame, ind: pd.DataFrame) -> go.Figure:
-    """Neutral line chart without finance-specific overlays."""
+    """Readable candle chart with the main trend overlays restored."""
     view = df.tail(180)
+    iv = ind.tail(180)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=view.index, y=view["close"], name="Trend",
-        line=dict(width=2, color="#38bdf8"),
-        mode="lines"))
+    fig.add_trace(go.Candlestick(
+        x=view.index, open=view["open"], high=view["high"],
+        low=view["low"], close=view["close"], name="Price"))
+    for col, color, label in [
+        ("ema_fast", "#38bdf8", "EMA 9"),
+        ("ema_mid", "#f472b6", "EMA 21"),
+        ("ema_trend_fast", "#facc15", "EMA 50"),
+        ("ema_trend_slow", "#a78bfa", "EMA 200"),
+        ("supertrend", "#2dd4bf", "Supertrend"),
+    ]:
+        fig.add_trace(go.Scatter(x=iv.index, y=iv[col], name=label,
+                                 line=dict(width=1.1, color=color)))
+    fig.add_trace(go.Scatter(x=iv.index, y=iv["bb_upper"], name="BB upper",
+                             line=dict(width=0.8, color="rgba(148,163,184,0.55)")))
+    fig.add_trace(go.Scatter(x=iv.index, y=iv["bb_lower"], name="BB lower",
+                             line=dict(width=0.8, color="rgba(148,163,184,0.55)"),
+                             fill="tonexty", fillcolor="rgba(148,163,184,0.07)"))
     fig.update_layout(
-        height=430, template="plotly_dark",
-        xaxis_rangeslider_visible=False,
+        height=540, template="plotly_dark", xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
-        margin=dict(l=10, r=10, t=30, b=10),
-        yaxis_title="Value",
-        title="Trend overview",
-    )
+        margin=dict(l=10, r=10, t=30, b=10), yaxis_title="Price (USDT)")
     return fig
 
 
 def signal_card(sig) -> None:
     color, emoji = SIGNAL_STYLE[sig.final]
     status = STATUS_LABEL[sig.final]
-    sub = (f"status <b>{status}</b> &nbsp;·&nbsp; score <b>{sig.score:+.2f}</b>"
-           f" &nbsp;·&nbsp; positive {sig.bullish} &nbsp; negative {sig.bearish}"
-           f" &nbsp;·&nbsp; consistency {sig.agreement}%")
-    sub += (f"<br>environment <b>{sig.regime}</b> &nbsp;·&nbsp; "
-            f"secondary trend: {MTF_LABEL[sig.mtf_trend]}"
-            + (" &nbsp;·&nbsp; <span style='color:#fb923c'>⚠ secondary trend differs</span>"
+    sub = (f"consensus score <b>{sig.score:+.2f}</b>"
+           f" &nbsp;·&nbsp; 🟢 {sig.bullish} &nbsp; 🔴 {sig.bearish}"
+           f" &nbsp; ⚪ {sig.neutral}"
+           f" &nbsp;·&nbsp; agreement {sig.agreement}%")
+    sub += (f"<br>regime <b>{sig.regime}</b> (CHOP {sig.chop:.0f})"
+            f" &nbsp;·&nbsp; {sig.mtf_timeframe or 'Higher timeframe'}: "
+            f"{MTF_LABEL[sig.mtf_trend]}"
+            + (" &nbsp;·&nbsp; <span style='color:#fb923c'>⚠ higher timeframe differs</span>"
                if sig.mtf_blocked else ""))
-    if sig.filter_blocked:
-        sub += " &nbsp;·&nbsp; <span style='color:#fbbf24'>⚠ quality gate active</span>"
+    if sig.deriv:
+        funding = sig.deriv.get("funding_pct")
+        oi = sig.deriv.get("oi_chg_24h_pct")
+        details = []
+        if funding is not None:
+            details.append(f"funding {funding:+.4f}%")
+        if oi is not None:
+            details.append(f"OI 24h {oi:+.1f}%")
+        if details:
+            sub += (f" &nbsp;·&nbsp; <span style='color:#7dd3fc'>"
+                    f"{sig.deriv.get('source', 'sentiment')}: "
+                    + " ".join(details) + "</span>")
     if sig.patterns and sig.patterns.names:
+        note = ", ".join(sig.patterns.names)
         if sig.pattern_vetoed:
-            sub += " &nbsp;·&nbsp; <span style='color:#f87171'>⛔ reversal filter active</span>"
+            sub += (f" &nbsp;·&nbsp; <span style='color:#f87171'>"
+                    f"⛔ event filter: {note}</span>")
         else:
-            sub += " &nbsp;·&nbsp; event flag detected"
+            sub += (f" &nbsp;·&nbsp; <span style='color:#4ade80'>"
+                    f"✅ event: {note}</span>")
     st.markdown(
         f"""
         <div style="border:2px solid {color};background:{color}14;border-radius:14px;
@@ -197,16 +222,17 @@ def signal_card(sig) -> None:
 
 
 def votes_table(sig) -> pd.DataFrame:
-    """Show factor states without exposing indicator names."""
+    """Show the actual component names and explanations for readability."""
     rows = []
-    for i, v in enumerate(sig.votes, start=1):
-        state = {1: "Positive", 0: "Neutral", -1: "Negative"}[v.vote]
+    for v in sig.votes:
+        emoji = {1: "🟢 +1", 0: "⚪ 0", -1: "🔴 −1"}[v.vote]
+        muted = " (muted by regime)" if v.vote == 0 and v.weight < 0.4 else ""
         rows.append({
-            "Component": f"Factor {i:02d}",
-            "Current state": state,
-            "Importance": round(v.weight, 2),
-            "Assessment": ("Favorable" if v.vote == 1 else
-                           "Unfavorable" if v.vote == -1 else "No clear direction"),
+            "Indicator": v.name,
+            "Latest": v.value,
+            "Vote": emoji,
+            "Weight": round(v.weight, 2),
+            "Why": v.reason + muted,
         })
     return pd.DataFrame(rows)
 
@@ -245,12 +271,12 @@ def coin_section(symbol: str, timeframe: str, limit: int,
     with c1:
         signal_card(sig)
     with c2:
-        st.metric("Current value", f"{sig.close:,.6g}",
+        st.metric("Close (USDT)", f"{sig.close:,.6g}",
                   f"{df['close'].pct_change().iloc[-1] * 100:+.2f}% latest interval")
     with c3:
-        st.metric("Consistency score", f"{sig.score:+.2f}", "range −1 … +1")
+        st.metric("Consensus score", f"{sig.score:+.2f}", "range −1 … +1")
     with c4:
-        st.metric("Variation", f"{sig.atr_pct:.2f}%")
+        st.metric("ATR volatility", f"{sig.atr_pct:.2f}%")
 
     lc, rc = st.columns(2)
     with lc:
@@ -271,7 +297,7 @@ def coin_section(symbol: str, timeframe: str, limit: int,
         }))
 
     st.plotly_chart(price_chart(df, ind), use_container_width=True)
-    st.markdown("**Component assessment for the latest interval**")
+    st.markdown("**Indicator and factor votes — latest closed candle**")
     st.dataframe(votes_table(sig), use_container_width=True, hide_index=True)
 
     with st.expander("Confidence and historical consistency"):
@@ -328,10 +354,10 @@ def backtest_tab() -> None:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        item_label = st.selectbox("Item", ITEM_OPTIONS, key="bt_item")
+        item_label = st.selectbox("Coin", ITEM_OPTIONS, key="bt_item")
         coin = LABEL_TO_SYMBOL[item_label]
     with c2:
-        tf = st.selectbox("Interval", TIMEFRAMES, index=2, key="bt_tf")
+        tf = st.selectbox("Timeframe", TIMEFRAMES, index=2, key="bt_tf")
     with c3:
         limit = st.slider("Data points", 300, 1000, 1000, step=100, key="bt_limit")
 
@@ -443,10 +469,10 @@ def validation_tab() -> None:
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        item_label = st.selectbox("Item", ITEM_OPTIONS, key="wf_item")
+        item_label = st.selectbox("Coin", ITEM_OPTIONS, key="wf_item")
         coin = LABEL_TO_SYMBOL[item_label]
     with c2:
-        tf = st.selectbox("Interval", TIMEFRAMES, index=2, key="wf_tf")
+        tf = st.selectbox("Timeframe", TIMEFRAMES, index=2, key="wf_tf")
     with c3:
         fee = st.slider("Processing cost (%)", 0.0, 0.5, 0.1, 0.01, key="wf_fee")
     with c4:
@@ -607,9 +633,9 @@ def paper_tab() -> None:
         with st.form("new_activity_record"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                new_item_label = st.selectbox("Item", ITEM_OPTIONS, key="paper_new_item")
+                new_item_label = st.selectbox("Coin", ITEM_OPTIONS, key="paper_new_item")
             with c2:
-                new_tf = st.selectbox("Interval", TIMEFRAMES, index=2, key="paper_new_tf")
+                new_tf = st.selectbox("Timeframe", TIMEFRAMES, index=2, key="paper_new_tf")
             with c3:
                 scenario_label = st.selectbox("Scenario", ["Positive", "Negative"],
                                               key="paper_new_direction")
@@ -782,11 +808,15 @@ changed from the workspace controls.
 
 ### Reading the status
 
-- **Priority Up** — strongly positive balance
-- **Upward** — positive balance
+- **Strong positive** — strongly positive balance
+- **Positive** — positive balance
 - **Stable** — no clear direction
-- **Downward** — negative balance
-- **Priority Down** — strongly negative balance
+- **Negative** — negative balance
+- **Strong negative** — strongly negative balance
+
+Coin pairs remain visible in the overview so each result can be identified. The
+indicator table below each chart explains the individual components behind the
+current status.
 
 The scenario and validation results are historical calculations, not
 guarantees about future results.
@@ -800,25 +830,25 @@ def main() -> None:
 
     with st.sidebar:
         st.header("⚙️ Workspace controls")
-        st.multiselect("Items", ITEM_OPTIONS, default=DEFAULT_ITEM_OPTIONS,
-                       key="item_select")
+        st.multiselect("Coins", ITEM_OPTIONS, default=DEFAULT_ITEM_OPTIONS,
+                       key="coin_select")
         st.markdown("**Quick selection:**")
         b1, b2 = st.columns(2)
-        if b1.button("All items", use_container_width=True):
-            st.session_state["item_select"] = GROUP_OPTIONS["All items"]
+        if b1.button("🌐 All coins", use_container_width=True):
+            st.session_state["coin_select"] = GROUP_OPTIONS["All coins"]
             st.rerun()
-        if b2.button("Primary group", use_container_width=True):
-            st.session_state["item_select"] = GROUP_OPTIONS["Primary group"]
+        if b2.button("👑 Majors", use_container_width=True):
+            st.session_state["coin_select"] = GROUP_OPTIONS["Majors"]
             st.rerun()
         b3, b4 = st.columns(2)
-        if b3.button("Secondary group", use_container_width=True):
-            st.session_state["item_select"] = GROUP_OPTIONS["Secondary group"]
+        if b3.button("🪙 Alt majors", use_container_width=True):
+            st.session_state["coin_select"] = GROUP_OPTIONS["Alt majors"]
             st.rerun()
-        if b4.button("Recent group", use_container_width=True):
-            st.session_state["item_select"] = GROUP_OPTIONS["Recent group"]
+        if b4.button("🔥 Trending", use_container_width=True):
+            st.session_state["coin_select"] = GROUP_OPTIONS["Trending"]
             st.rerun()
-        timeframe = st.selectbox("Interval", TIMEFRAMES, index=2)
-        limit = st.slider("Data points", 300, 1000, 500, step=100)
+        timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=2)
+        limit = st.slider("Candle limit", 300, 1000, 500, step=100)
         use_patterns = st.checkbox(
             "Enable event filter", value=False,
             help="When enabled, a fresh reversal event can change a positive "
@@ -830,16 +860,16 @@ def main() -> None:
         st.caption("Data is cached for 5 minutes. Use Refresh to force a re-fetch.")
 
     tab_sig, tab_bt, tab_wf, tab_paper, tab_about = st.tabs(
-        ["📊 Overview", "🧪 Scenario review", "🔬 Rolling validation",
+        ["📊 Market overview", "🧪 Scenario review", "🔬 Rolling validation",
          "📒 Activity log", "ℹ️ Guide"])
 
     with tab_sig:
-        selected_labels = st.session_state.get("item_select", DEFAULT_ITEM_OPTIONS)
+        selected_labels = st.session_state.get("coin_select", DEFAULT_ITEM_OPTIONS)
         items = [LABEL_TO_SYMBOL.get(label, label) for label in selected_labels]
         if not items:
             st.info("Select at least one item in the sidebar.")
         else:
-            st.markdown(f"#### Overview — {len(items)} items, {timeframe}")
+            st.markdown(f"#### 🌐 Market overview — {len(items)} coins, {timeframe}")
             st.dataframe(market_board(tuple(items), timeframe, limit, use_patterns),
                          use_container_width=True, hide_index=True)
             st.divider()
