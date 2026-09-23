@@ -177,6 +177,20 @@ Then open http://localhost:8501:
   1% risk, one-click close
 - **ℹ️ How it works** — every rule, weight and threshold in one place
 
+### A-grade quality gate
+
+The mobile dashboard also includes a conservative meta-label for the current
+signal. It replays historical signals with a triple-barrier label: the target
+must be reached before the stop within the next few candles. If both levels are
+inside the same candle, the stop is counted first. The gate reports the
+Laplace-smoothed TP-first estimate, sample count, reward/risk, expected value
+after estimated costs, signal expiry, and an A/B/WAIT grade.
+
+This is an empirical filter, not a guarantee or a probability of profit. A
+signal is marked **WAIT** when there are too few historical samples, the
+conservative bound is weak, expected value is not positive, agreement is low,
+or the regime/quality filters are unfavorable.
+
 ## Configuration
 
 Everything lives in **`src/config.py`**:

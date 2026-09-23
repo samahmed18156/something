@@ -10,6 +10,7 @@ from src.config import IndicatorSettings
 from src.data import price_change_pct_24h
 from src.patterns import PatternState
 from src.validation import confidence_report
+from src.quality import _barrier_label, _laplace_probability
 from src.signals import evaluate
 
 
@@ -60,6 +61,22 @@ class CoreTests(unittest.TestCase):
         self.assertIn("1", report["horizons"])
         self.assertIn("3", report["horizons"])
         self.assertIn("win_rate_pct", report["horizons"]["1"])
+
+    def test_quality_barrier_is_conservative_when_both_levels_hit(self):
+        index = pd.date_range("2026-01-01", periods=3, freq="1h", tz="UTC")
+        df = pd.DataFrame({
+            "open": [100.0, 100.0, 100.0],
+            "high": [100.0, 110.0, 100.0],
+            "low": [100.0, 90.0, 100.0],
+            "close": [100.0, 100.0, 100.0],
+            "volume": 1000.0,
+        }, index=index)
+        self.assertEqual(_barrier_label(df, 0, 1, 108.0, 92.0, 1), 0)
+        self.assertEqual(_barrier_label(df, 0, 1, 108.0, 92.0, 2), 0)
+
+    def test_quality_probability_is_laplace_smoothed(self):
+        self.assertAlmostEqual(_laplace_probability(9, 10), 10 / 12)
+        self.assertAlmostEqual(_laplace_probability(0, 0), 0.5)
 
     def test_enabled_bearish_pattern_vetoes_buy(self):
         n = 300

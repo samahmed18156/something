@@ -188,6 +188,9 @@ def confidence_report(df: pd.DataFrame, cfg: IndicatorSettings | None = None,
 
     outcomes = {h: [] for h in horizons}
     direction_outcomes = {"positive": [], "negative": []}
+    direction_outcomes_by_horizon = {
+        str(h): {"positive": [], "negative": []} for h in horizons
+    }
     current = {"status": "Stable", "score": 0.0, "filter_reasons": []}
 
     def classify(i: int) -> tuple[int, float, list[str]]:
@@ -234,7 +237,9 @@ def confidence_report(df: pd.DataFrame, cfg: IndicatorSettings | None = None,
             raw = (float(df["close"].iloc[i + h]) / float(df["close"].iloc[i]) - 1.0) * 100.0
             net = direction * raw - 2.0 * (fee_pct + slippage_pct)
             outcomes[h].append(net)
-            direction_outcomes["positive" if direction == 1 else "negative"].append(net)
+            direction_key = "positive" if direction == 1 else "negative"
+            direction_outcomes[direction_key].append(net)
+            direction_outcomes_by_horizon[str(h)][direction_key].append(net)
 
     def summarize(values: list[float]) -> dict:
         if not values:
@@ -261,6 +266,10 @@ def confidence_report(df: pd.DataFrame, cfg: IndicatorSettings | None = None,
         "current": current,
         "horizons": {str(h): summarize(outcomes[h]) for h in horizons},
         "directions": {key: summarize(values) for key, values in direction_outcomes.items()},
+        "direction_horizons": {
+            str(h): {key: summarize(values) for key, values in by_direction.items()}
+            for h, by_direction in direction_outcomes_by_horizon.items()
+        },
         "fee_pct_per_side": fee_pct,
         "slippage_pct_per_side": slippage_pct,
         "filter_enabled": use_patterns,

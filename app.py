@@ -48,6 +48,7 @@ from src.config import (ALL_COINS, ALT_MAJORS, DEFAULT_COINS, DEFAULT_TIMEFRAME,
 from src.data import drop_unclosed, fetch_ohlcv
 from src.signals import full_signal
 from src.validation import confidence_report, sensitivity_grid, walk_forward
+from src.quality import assess_signal
 
 st.set_page_config(page_title="Operations Workspace",
                    page_icon="📊", layout="centered",
@@ -290,6 +291,22 @@ def get_confidence(symbol: str, timeframe: str, limit: int,
         use_mtf=None, use_patterns=use_patterns, slippage_pct=slippage_pct)
 
 
+@st.cache_data(ttl=300, show_spinner="Checking historical signal quality…")
+def get_quality(symbol: str, timeframe: str, limit: int,
+                use_patterns: bool = False, fee_pct: float = 0.1,
+                slippage_pct: float = 0.05):
+    df = drop_unclosed(load_candles(symbol, timeframe, limit), timeframe)
+    parent_tf = PARENT_TIMEFRAME.get(timeframe, "")
+    parent = (drop_unclosed(load_candles(symbol, parent_tf, 500), parent_tf)
+              if parent_tf else None)
+    sig = get_signal(symbol, timeframe, limit, use_mtf=None, use_deriv=True,
+                     use_patterns=use_patterns)
+    return assess_signal(
+        df, sig, CFG, parent_df=parent, parent_timeframe=parent_tf,
+        timeframe=timeframe, use_patterns=use_patterns,
+        fee_pct=fee_pct, slippage_pct=slippage_pct)
+
+
 def _format_pf(value: float) -> str:
     return "∞" if value == float("inf") else f"{value:.2f}"
 
@@ -319,6 +336,31 @@ def coin_section(symbol: str, timeframe: str, limit: int,
     with c4:
         st.metric("ATR volatility", f"{sig.atr_pct:.2f}%")
 
+    quality = get_quality(symbol, timeframe, limit, use_patterns)
+    st.markdown("#### A-grade quality gate")
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Quality", quality["grade"])
+    q2.metric(
+        "TP-first probability",
+        "—" if quality["probability_pct"] is None else f"{quality['probability_pct']:.1f}%",
+        "empirical estimate")
+    q3.metric(
+        "Expected value",
+        "—" if quality["expected_value_r"] is None else f"{quality['expected_value_r']:+.2f}R",
+        "after estimated costs")
+    q4.metric("Historical samples", str(quality["samples"]))
+    if quality["action"] == "TRADE":
+        st.success(
+            f"{quality['grade']}-grade {quality['direction']} candidate. "
+            f"The quality gate passed for the next {quality['valid_for_bars']} "
+            f"completed {timeframe} candles.")
+    else:
+        st.warning("WAIT — " + " ".join(quality["reasons"]))
+    expiry = quality.get("valid_until")
+    st.caption(
+        "Empirical triple-barrier meta-label; not a guarantee. "
+        + (f"Estimated signal expiry: {expiry:%Y-%m-%d %H:%M UTC}." if expiry is not None else ""))
+
     plan = signal_plan(sig)
     st.markdown("#### Full signal")
     if plan["direction"] == "WAIT":
@@ -329,10 +371,14 @@ def coin_section(symbol: str, timeframe: str, limit: int,
         entry = plan["entry"]
         tp_change = (plan["tp"] / entry - 1.0) * 100.0
         sl_change = (plan["sl"] / entry - 1.0) * 100.0
-        st.success(
-            f"Current signal: {plan['direction']} · {plan['status']} · "
-            f"Entry {entry:,.6g} · TP {plan['tp']:,.6g} ({tp_change:+.2f}%) · "
+        full_signal_text = (
+            f"{plan['direction']} · Entry {entry:,.6g} · "
+            f"TP {plan['tp']:,.6g} ({tp_change:+.2f}%) · "
             f"SL {plan['sl']:,.6g} ({sl_change:+.2f}%)")
+        if quality["action"] == "TRADE":
+            st.success(f"Qualified full signal: {quality['grade']}-grade {full_signal_text}")
+        else:
+            st.info(f"Raw direction only — qualified action is WAIT: {full_signal_text}")
         p1, p2, p3, p4 = st.columns(4)
         p1.metric("Direction", plan["direction"])
         p2.metric("Entry price", f"{entry:,.6g}", "last closed candle")
