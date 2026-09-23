@@ -13,6 +13,7 @@ from src.validation import confidence_report
 from src.quality import _barrier_label, _laplace_probability
 from src.execution import estimate_market_fill, execution_guard
 from src.scorecard import build_scorecard
+from src.order_flow import analyze_liquidity
 from src.signals import evaluate
 
 
@@ -131,6 +132,45 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["summary"]["losses"], 1)
         self.assertEqual(len(result["by_coin"]), 1)
         self.assertLess(result["summary"]["max_drawdown_pct"], 0.0)
+
+    def test_liquidity_scan_requires_persistence_and_absorption(self):
+        book = {
+            "source": "test",
+            "bids": [(100.0, 100.0), (99.9, 10.0), (99.8, 9.0), (99.7, 11.0)],
+            "asks": [(100.1, 10.0), (100.2, 9.0), (100.3, 11.0), (100.4, 10.0)],
+        }
+        first = analyze_liquidity(
+            book,
+            trades=[{"price": 100.0, "quantity": 20.0, "buyer_maker": True}],
+            now=1000.0,
+        )
+        self.assertEqual(first["action"], "WATCH")
+        self.assertEqual(first["wall"]["side"], "BID")
+        self.assertEqual(first["wall_age_seconds"], 0.0)
+
+        second = analyze_liquidity(
+            book,
+            trades=[{"price": 100.0, "quantity": 20.0, "buyer_maker": True}],
+            previous=first["tracking"],
+            now=1030.0,
+        )
+        self.assertEqual(second["action"], "CONFIRMED BID WALL")
+        self.assertGreaterEqual(second["wall_age_seconds"], 30.0)
+        self.assertGreater(second["flow"]["near_wall_sell_notional"], 0.0)
+
+    def test_liquidity_scan_flags_disappeared_wall(self):
+        previous = {
+            "side": "BID", "price": 100.0, "notional": 10000.0,
+            "tick_size": 0.1, "first_seen": 1000.0,
+        }
+        book = {
+            "source": "test",
+            "bids": [(99.9, 10.0), (99.8, 9.0)],
+            "asks": [(100.1, 10.0), (100.2, 9.0)],
+        }
+        result = analyze_liquidity(book, previous=previous, now=1030.0)
+        self.assertEqual(result["action"], "NO WALL")
+        self.assertEqual(result["cancel_risk"], "HIGH")
 
     def test_enabled_bearish_pattern_vetoes_buy(self):
         n = 300

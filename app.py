@@ -54,6 +54,7 @@ from src.broker import BinanceSpotBroker
 from src.live_trading import approve_and_submit, make_plan
 from src.trading_store import TradeStore
 from src.scorecard import build_scorecard
+from src.order_flow import OrderFlowDataError, scan_liquidity
 
 st.set_page_config(page_title="Operations Workspace",
                    page_icon="📊", layout="centered",
@@ -391,6 +392,75 @@ def coin_section(symbol: str, timeframe: str, limit: int,
         p4.metric("Stop-loss", f"{plan['sl']:,.6g}", f"{sl_change:+.2f}%")
 
     st.caption("Entry uses the latest completed candle close. TP and SL are ATR-based reference levels, not automatically placed orders.")
+
+    # Manual-only microstructure confirmation. It never changes the A-grade
+    # decision and never submits an order.
+    liquidity_key = f"liquidity_{symbol}_{timeframe}"
+    tracking_key = f"{liquidity_key}_tracking"
+    st.markdown("#### 🧱 Liquidity wall check")
+    st.caption(
+        "A public order-book scan for unusually large visible bids/asks. "
+        "A wall is not proof of a whale or a guaranteed move; scan again after "
+        "20–30 seconds to test persistence. This is a manual confirmation only.")
+    if st.button("🔎 Scan bid/ask walls", key=f"scan_{liquidity_key}",
+                 use_container_width=True):
+        try:
+            with st.spinner("Reading public order book and recent trades…"):
+                liquidity = scan_liquidity(
+                    symbol, previous=st.session_state.get(tracking_key))
+            st.session_state[liquidity_key] = liquidity
+            if liquidity.get("tracking"):
+                st.session_state[tracking_key] = liquidity["tracking"]
+            elif tracking_key in st.session_state:
+                del st.session_state[tracking_key]
+        except OrderFlowDataError as exc:
+            st.session_state[liquidity_key] = {
+                "action": "ERROR", "reasons": [str(exc)]}
+        except Exception as exc:
+            st.session_state[liquidity_key] = {
+                "action": "ERROR", "reasons": [f"Liquidity scan failed: {type(exc).__name__}"]
+            }
+
+    liquidity = st.session_state.get(liquidity_key)
+    if liquidity is not None:
+        action = liquidity.get("action")
+        if action == "CONFIRMED BID WALL":
+            st.success("Bid wall confirmed as a candidate manual confirmation — not an order instruction.")
+        elif action == "ERROR":
+            st.error("Liquidity scan unavailable — " + " ".join(liquidity.get("reasons", [])))
+        elif action == "NO WALL":
+            st.info("No qualifying visible liquidity wall found in this scan range.")
+        else:
+            st.warning("Liquidity result: " + str(action))
+
+        wall = liquidity.get("wall")
+        if wall:
+            l1, l2, l3, l4 = st.columns(4)
+            l1.metric("Wall side", wall["side"])
+            l2.metric("Wall price", f"{wall['price']:,.8g}")
+            l3.metric("Wall size", f"{wall['notional']:,.0f} USDT")
+            l4.metric("Wall score", f"{liquidity.get('score', 0):.0f}/100")
+            st.caption(
+                f"Age observed: {liquidity.get('wall_age_seconds', 0):.0f}s · "
+                f"distance: {wall['distance_bps']:.1f} bps · "
+                f"size: {wall['size_multiple']:.1f}× nearby median · "
+                f"cancel risk: {liquidity.get('cancel_risk', '—')} · "
+                f"spread: {liquidity.get('spread_bps', 0):.1f} bps")
+            if liquidity.get("proposed_entry") is not None:
+                st.caption(
+                    f"Reference only — one tick above the bid wall: "
+                    f"{liquidity['proposed_entry']:,.8g}. Do not use it if the wall disappears.")
+        flow = liquidity.get("flow", {})
+        if flow:
+            st.caption(
+                f"Recent taker-flow imbalance: {flow.get('flow_imbalance', 0.0):+.2f} · "
+                f"seller volume near wall: {flow.get('near_wall_sell_notional', 0.0):,.0f} USDT · "
+                f"trades sampled: {flow.get('trades_count', 0)}")
+        if liquidity.get("reasons"):
+            st.caption(" · ".join(liquidity["reasons"]))
+        st.caption(
+            "Use this only with a qualified LONG/A-Grade signal for Binance Spot. "
+            "The strongest wall may be spoofed, cancelled, or consumed.")
 
     execution_key = f"execution_{symbol}_{timeframe}"
     if st.button("🔍 Check live execution conditions", key=f"check_{execution_key}",
