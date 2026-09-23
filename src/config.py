@@ -38,7 +38,7 @@ TRENDING = [
 ALL_COINS = MAJORS + ALT_MAJORS + TRENDING
 DEFAULT_COINS = MAJORS + ALT_MAJORS   # trenders available via the sidebar
 
-DEFAULT_TIMEFRAME = "4h"
+DEFAULT_TIMEFRAME = "1h"
 TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 
 CANDLE_LIMIT = 500          # candles fetched per coin (max 1000 on Binance)
