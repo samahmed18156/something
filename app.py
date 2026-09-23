@@ -43,14 +43,15 @@ if __name__ == "__main__" and not _running_under_streamlit():
 
 from src import indicators as ta
 from src.backtest import run_backtest
-from src.config import (ALL_COINS, ALT_MAJORS, DEFAULT_COINS, IndicatorSettings,
-                        MAJORS, PARENT_TIMEFRAME, TIMEFRAMES, TRENDING)
+from src.config import (ALL_COINS, ALT_MAJORS, DEFAULT_COINS, DEFAULT_TIMEFRAME,
+                        IndicatorSettings, MAJORS, PARENT_TIMEFRAME, TIMEFRAMES, TRENDING)
 from src.data import drop_unclosed, fetch_ohlcv
 from src.signals import full_signal
 from src.validation import confidence_report, sensitivity_grid, walk_forward
 
 st.set_page_config(page_title="Operations Workspace",
-                   page_icon="📊", layout="wide")
+                   page_icon="📊", layout="centered",
+                   initial_sidebar_state="collapsed")
 
 CFG = IndicatorSettings()
 
@@ -60,7 +61,9 @@ CFG = IndicatorSettings()
 ITEM_LABELS = {symbol: symbol for symbol in ALL_COINS}
 LABEL_TO_SYMBOL = {label: symbol for symbol, label in ITEM_LABELS.items()}
 ITEM_OPTIONS = [ITEM_LABELS[symbol] for symbol in ALL_COINS]
-DEFAULT_ITEM_OPTIONS = [ITEM_LABELS[symbol] for symbol in DEFAULT_COINS]
+# Five major pairs keep the first mobile view fast; all other pairs remain
+# available through the sidebar quick selections.
+DEFAULT_ITEM_OPTIONS = [ITEM_LABELS[symbol] for symbol in MAJORS]
 GROUP_OPTIONS = {
     "All coins": [ITEM_LABELS[symbol] for symbol in ALL_COINS],
     "Majors": [ITEM_LABELS[symbol] for symbol in MAJORS],
@@ -416,7 +419,7 @@ def backtest_tab() -> None:
         item_label = st.selectbox("Coin", ITEM_OPTIONS, key="bt_item")
         coin = LABEL_TO_SYMBOL[item_label]
     with c2:
-        tf = st.selectbox("Timeframe", TIMEFRAMES, index=2, key="bt_tf")
+        tf = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index(DEFAULT_TIMEFRAME), key="bt_tf")
     with c3:
         limit = st.slider("Data points", 300, 1000, 1000, step=100, key="bt_limit")
 
@@ -531,7 +534,7 @@ def validation_tab() -> None:
         item_label = st.selectbox("Coin", ITEM_OPTIONS, key="wf_item")
         coin = LABEL_TO_SYMBOL[item_label]
     with c2:
-        tf = st.selectbox("Timeframe", TIMEFRAMES, index=2, key="wf_tf")
+        tf = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index(DEFAULT_TIMEFRAME), key="wf_tf")
     with c3:
         fee = st.slider("Processing cost (%)", 0.0, 0.5, 0.1, 0.01, key="wf_fee")
     with c4:
@@ -694,7 +697,7 @@ def paper_tab() -> None:
             with c1:
                 new_item_label = st.selectbox("Coin", ITEM_OPTIONS, key="paper_new_item")
             with c2:
-                new_tf = st.selectbox("Timeframe", TIMEFRAMES, index=2, key="paper_new_tf")
+                new_tf = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index(DEFAULT_TIMEFRAME), key="paper_new_tf")
             with c3:
                 scenario_label = st.selectbox("Scenario", ["Positive", "Negative"],
                                               key="paper_new_direction")
@@ -885,7 +888,8 @@ guarantees about future results.
 def main() -> None:
     st.title("📊 Operations Workspace")
     st.caption(
-        "Private data overview · trend analysis · scenario review · rolling validation")
+        "Mobile-ready 1h signal workspace · entry · take-profit · stop-loss · "
+        "scenario review")
 
     with st.sidebar:
         st.header("⚙️ Workspace controls")
@@ -906,8 +910,8 @@ def main() -> None:
         if b4.button("🔥 Trending", use_container_width=True):
             st.session_state["coin_select"] = GROUP_OPTIONS["Trending"]
             st.rerun()
-        timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=2)
-        limit = st.slider("Candle limit", 300, 1000, 500, step=100)
+        timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index(DEFAULT_TIMEFRAME))
+        limit = st.slider("Candle limit", 300, 1000, 300, step=100)
         use_patterns = st.checkbox(
             "Enable event filter", value=False,
             help="When enabled, a fresh reversal event can change a positive "
@@ -929,8 +933,14 @@ def main() -> None:
             st.info("Select at least one item in the sidebar.")
         else:
             st.markdown(f"#### 🌐 Market overview — {len(items)} coins, {timeframe}")
-            st.dataframe(market_board(tuple(items), timeframe, limit, use_patterns),
-                         use_container_width=True, hide_index=True)
+            board = market_board(tuple(items), timeframe, limit, use_patterns)
+            # Keep the first table narrow enough for a phone screen. The full
+            # diagnostic board remains available below it when needed.
+            mobile_columns = ["Coin", "Status", "Direction", "Entry", "TP", "SL"]
+            st.dataframe(board[mobile_columns], use_container_width=True,
+                         hide_index=True)
+            with st.expander("More market details"):
+                st.dataframe(board, use_container_width=True, hide_index=True)
             st.divider()
             for item in items:
                 coin_section(item, timeframe, limit, use_patterns)

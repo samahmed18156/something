@@ -8,7 +8,7 @@ Fetches closed candles from the Binance public API (no keys), computes the
 plus the final consensus signal for each coin.
 
 Usage:
-    python main.py                          # all default coins, 4h candles
+    python main.py                          # all default coins, 1h candles
     python main.py BTC/USDT ETH/USDT        # specific coins
     python main.py --timeframe 1h           # different timeframe
     python main.py --no-mtf                 # disable the higher-TF filter
@@ -26,7 +26,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.config import CANDLE_LIMIT, DEFAULT_COINS, TIMEFRAMES
+from src.config import CANDLE_LIMIT, DEFAULT_COINS, DEFAULT_TIMEFRAME, TIMEFRAMES
 from src.signals import full_signal
 
 
@@ -129,7 +129,7 @@ def main() -> None:
                     "regime & multi-timeframe filters")
     ap.add_argument("coins", nargs="*", default=DEFAULT_COINS,
                     help="ccxt-format symbols, e.g. BTC/USDT")
-    ap.add_argument("--timeframe", default="4h", choices=TIMEFRAMES)
+    ap.add_argument("--timeframe", default=DEFAULT_TIMEFRAME, choices=TIMEFRAMES)
     ap.add_argument("--mtf", action="store_true",
                     help="force the higher-TF filter ON "
                          "(default: per-timeframe auto — on for 15m/1h/4h, off for 1d)")

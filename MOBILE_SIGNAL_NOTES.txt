@@ -1,0 +1,7 @@
+Mobile-first full-signal version:
+- 1h is the default timeframe across the Streamlit dashboard and CLI.
+- Initial mobile view starts with five major pairs to reduce load time.
+- Market overview first shows Coin, Status, Direction, Entry, TP, and SL.
+- Full diagnostic board is inside More market details.
+- Each coin section includes the full signal card and both LONG/SHORT reference plans.
+- The Render deployment must be updated by pushing these files to master.
