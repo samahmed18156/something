@@ -1,0 +1,12 @@
+This package contains the restored clear UI plus the full signal feature.
+
+Full signal fields included in app.py:
+- Direction: LONG, SHORT, or WAIT
+- Entry price
+- Take-profit price
+- Stop-loss price
+- Direction, Entry, TP, and SL columns in the market overview
+- Positive / LONG plan
+- Negative / SHORT plan
+
+The entry is the latest completed candle close. TP and SL are ATR-based reference levels.

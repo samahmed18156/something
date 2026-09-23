@@ -95,6 +95,38 @@ def display_direction(direction: str) -> str:
     return "Positive" if direction == "LONG" else "Negative"
 
 
+def signal_plan(sig) -> dict:
+    """Return the current directional plan and its ATR-based levels."""
+    if sig.final in ("BUY", "STRONG BUY"):
+        return {
+            "direction": "LONG",
+            "entry": float(sig.close),
+            "tp": float(sig.target_long),
+            "sl": float(sig.stop_long),
+            "status": STATUS_LABEL[sig.final],
+        }
+    if sig.final in ("SELL", "STRONG SELL"):
+        return {
+            "direction": "SHORT",
+            "entry": float(sig.close),
+            "tp": float(sig.target_short),
+            "sl": float(sig.stop_short),
+            "status": STATUS_LABEL[sig.final],
+        }
+    return {
+        "direction": "WAIT",
+        "entry": float(sig.close),
+        "tp": None,
+        "sl": None,
+        "status": STATUS_LABEL[sig.final],
+    }
+
+
+def level_text(level: float, entry: float) -> str:
+    change = (level / entry - 1.0) * 100.0 if entry else 0.0
+    return f"{level:,.6g} ({change:+.2f}%)"
+
+
 @st.cache_data(ttl=300, show_spinner="Loading current data…")
 def load_candles(symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
     return fetch_ohlcv(symbol, timeframe, limit)
@@ -125,6 +157,7 @@ def market_board(symbols: tuple, timeframe: str, limit: int,
                               "✅ " if sig.patterns.bullish else "")
                 pat = pat_prefix + ", ".join(sig.patterns.names)
             mtf_column = f"Trend {sig.mtf_timeframe or ''}".strip()
+            plan = signal_plan(sig)
             rows.append({
                 "Coin": display_item(s),
                 "Close (USDT)": f"{sig.close:,.6g}",
@@ -132,6 +165,10 @@ def market_board(symbols: tuple, timeframe: str, limit: int,
                 "🟢 Positive": sig.bullish,
                 "🔴 Negative": sig.bearish,
                 "Status": f"{SIGNAL_STYLE[sig.final][1]} {STATUS_LABEL[sig.final]}",
+                "Direction": plan["direction"],
+                "Entry": f"{plan['entry']:,.6g}",
+                "TP": f"{plan['tp']:,.6g}" if plan["tp"] is not None else "—",
+                "SL": f"{plan['sl']:,.6g}" if plan["sl"] is not None else "—",
                 mtf_column: MTF_LABEL[sig.mtf_trend],
                 "Regime": sig.regime,
                 "Pattern": pat or "—",
@@ -142,6 +179,7 @@ def market_board(symbols: tuple, timeframe: str, limit: int,
             rows.append({
                 "Coin": display_item(s), "Close (USDT)": "—", "Score": None,
                 "🟢 Positive": 0, "🔴 Negative": 0, "Status": "⚠️ data unavailable",
+                "Direction": "—", "Entry": "—", "TP": "—", "SL": "—",
                 mtf_column: "—", "Regime": "—", "Pattern": "—", "ATR %": None,
             })
     return pd.DataFrame(rows)
@@ -278,22 +316,43 @@ def coin_section(symbol: str, timeframe: str, limit: int,
     with c4:
         st.metric("ATR volatility", f"{sig.atr_pct:.2f}%")
 
+    plan = signal_plan(sig)
+    st.markdown("#### Full signal")
+    if plan["direction"] == "WAIT":
+        st.info(
+            "Current result is Stable, so there is no confirmed directional signal. "
+            "The two possible plans are shown below for reference.")
+    else:
+        entry = plan["entry"]
+        tp_change = (plan["tp"] / entry - 1.0) * 100.0
+        sl_change = (plan["sl"] / entry - 1.0) * 100.0
+        st.success(
+            f"Current signal: {plan['direction']} · {plan['status']} · "
+            f"Entry {entry:,.6g} · TP {plan['tp']:,.6g} ({tp_change:+.2f}%) · "
+            f"SL {plan['sl']:,.6g} ({sl_change:+.2f}%)")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Direction", plan["direction"])
+        p2.metric("Entry price", f"{entry:,.6g}", "last closed candle")
+        p3.metric("Take-profit", f"{plan['tp']:,.6g}", f"{tp_change:+.2f}%")
+        p4.metric("Stop-loss", f"{plan['sl']:,.6g}", f"{sl_change:+.2f}%")
+
+    st.caption("Entry uses the latest completed candle close. TP and SL are ATR-based reference levels, not automatically placed orders.")
     lc, rc = st.columns(2)
     with lc:
-        st.markdown("**Positive scenario**")
+        st.markdown("**Positive / LONG plan**")
         st.table(pd.DataFrame({
-            "Level": ["Reference", "Lower boundary", "Upper objective"],
+            "Level": ["Entry price", "Stop-loss (1.5×ATR)", "Take-profit (2×ATR)"],
             "Value": [f"{sig.close:,.6g}",
-                      f"{sig.stop_long:,.6g} ({(sig.stop_long / sig.close - 1) * 100:+.2f}%)",
-                      f"{sig.target_long:,.6g} ({(sig.target_long / sig.close - 1) * 100:+.2f}%)"],
+                      level_text(sig.stop_long, sig.close),
+                      level_text(sig.target_long, sig.close)],
         }))
     with rc:
-        st.markdown("**Negative scenario**")
+        st.markdown("**Negative / SHORT plan**")
         st.table(pd.DataFrame({
-            "Level": ["Reference", "Upper boundary", "Lower objective"],
+            "Level": ["Entry price", "Stop-loss (1.5×ATR)", "Take-profit (2×ATR)"],
             "Value": [f"{sig.close:,.6g}",
-                      f"{sig.stop_short:,.6g} ({(sig.stop_short / sig.close - 1) * 100:+.2f}%)",
-                      f"{sig.target_short:,.6g} ({(sig.target_short / sig.close - 1) * 100:+.2f}%)"],
+                      level_text(sig.stop_short, sig.close),
+                      level_text(sig.target_short, sig.close)],
         }))
 
     st.plotly_chart(price_chart(df, ind), use_container_width=True)
