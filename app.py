@@ -55,6 +55,7 @@ from src.live_trading import approve_and_submit, make_plan
 from src.trading_store import TradeStore
 from src.scorecard import build_scorecard
 from src.order_flow import OrderFlowDataError, scan_liquidity
+from src.radar import rank_candidates
 
 st.set_page_config(page_title="Operations Workspace",
                    page_icon="📊", layout="centered",
@@ -305,12 +306,12 @@ def get_confidence(symbol: str, timeframe: str, limit: int,
 @st.cache_data(ttl=300, show_spinner="Checking historical signal quality…")
 def get_quality(symbol: str, timeframe: str, limit: int,
                 use_patterns: bool = False, fee_pct: float = 0.1,
-                slippage_pct: float = 0.05):
+                slippage_pct: float = 0.05, use_deriv: bool = True):
     df = drop_unclosed(load_candles(symbol, timeframe, limit), timeframe)
     parent_tf = PARENT_TIMEFRAME.get(timeframe, "")
     parent = (drop_unclosed(load_candles(symbol, parent_tf, 500), parent_tf)
               if parent_tf else None)
-    sig = get_signal(symbol, timeframe, limit, use_mtf=None, use_deriv=True,
+    sig = get_signal(symbol, timeframe, limit, use_mtf=None, use_deriv=use_deriv,
                      use_patterns=use_patterns)
     return assess_signal(
         df, sig, CFG, parent_df=parent, parent_timeframe=parent_tf,
@@ -1106,6 +1107,144 @@ def scorecard_tab() -> None:
             st.dataframe(table, use_container_width=True, hide_index=True)
 
 
+def build_precision_radar(symbols: tuple[str, ...], timeframe: str,
+                          limit: int, use_patterns: bool = False) -> dict:
+    """Scan a universe, then rank only evidence-qualified Spot LONGs."""
+    board = market_board(symbols, timeframe, limit, use_patterns)
+    candidates = []
+    rejection_counts: dict[str, int] = {}
+    bullish_count = 0
+    errors = 0
+
+    for board_row in board.to_dict("records"):
+        if board_row.get("Direction") != "LONG":
+            continue
+        bullish_count += 1
+        symbol = LABEL_TO_SYMBOL.get(board_row.get("Coin"), board_row.get("Coin"))
+        try:
+            # Re-check positive candidates with derivatives enabled before
+            # applying the historical quality gate.
+            sig = get_signal(symbol, timeframe, limit, use_mtf=None,
+                             use_deriv=True, use_patterns=use_patterns)
+            quality = get_quality(symbol, timeframe, limit, use_patterns,
+                                  use_deriv=True)
+            if quality.get("action") == "TRADE" and quality.get("direction") == "LONG":
+                candidates.append({
+                    "symbol": symbol,
+                    "action": quality.get("action"),
+                    "direction": quality.get("direction"),
+                    "grade": quality.get("grade", "WAIT"),
+                    "probability_pct": quality.get("probability_pct"),
+                    "conservative_probability_pct": quality.get("conservative_probability_pct"),
+                    "expected_value_r": quality.get("expected_value_r"),
+                    "samples": quality.get("samples", 0),
+                    "score": sig.score,
+                    "agreement_pct": sig.agreement,
+                    "regime": sig.regime,
+                    "mtf": "Aligned" if sig.mtf_trend == 1 else "Opposed" if sig.mtf_trend == -1 else "Unknown",
+                    "atr_pct": sig.atr_pct,
+                    "entry": sig.close,
+                    "target": sig.target_long,
+                    "stop": sig.stop_long,
+                })
+            else:
+                for reason in quality.get("reasons", [])[:3]:
+                    rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+        except Exception:
+            errors += 1
+
+    return {
+        "ranked": rank_candidates(candidates, limit=10),
+        "stats": {
+            "scanned": len(symbols),
+            "bullish": bullish_count,
+            "qualified": len(candidates),
+            "a_grade": sum(1 for row in candidates if row.get("grade") == "A"),
+            "errors": errors,
+        },
+        "rejections": sorted(rejection_counts.items(), key=lambda item: item[1], reverse=True)[:8],
+    }
+
+
+def precision_radar_tab(timeframe: str, limit: int, use_patterns: bool = False) -> None:
+    st.markdown(
+        "Scans the current top-100 liquid altcoin universe, then keeps only "
+        "evidence-qualified Binance Spot LONG candidates. This is precision-first: "
+        "no candidate is better than a weak candidate.")
+    st.caption(
+        "The radar uses the existing signal, higher-timeframe alignment, empirical "
+        "triple-barrier quality gate, sample count, and cost-aware expectancy. "
+        "The rank score orders candidates; it is not a win probability.")
+    try:
+        universe = tuple(top_100_altcoins())
+    except Exception as exc:
+        st.error(f"Could not load the top-100 universe: {type(exc).__name__}")
+        return
+    st.info(
+        f"Universe ready: {len(universe)} liquid altcoins · timeframe {timeframe}. "
+        "The scan can take a while because it checks historical evidence rather "
+        "than only the latest indicator snapshot.")
+    if st.button("🎯 Run precision scan", use_container_width=True):
+        with st.spinner("Scanning top-100 signals and validating the strongest candidates…"):
+            st.session_state["precision_radar_result"] = build_precision_radar(
+                universe, timeframe, limit, use_patterns)
+
+    result = st.session_state.get("precision_radar_result")
+    if not result:
+        st.caption("Run the scan when you want a fresh shortlist. It does not place orders.")
+        return
+
+    stats = result["stats"]
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Coins scanned", stats["scanned"])
+    r2.metric("Initial LONGs", stats["bullish"])
+    r3.metric("A-grade LONGs", stats["a_grade"])
+    r4.metric("Data errors", stats["errors"])
+
+    ranked = result["ranked"]
+    if not ranked:
+        if stats["qualified"]:
+            st.warning(
+                f"No A-grade candidate passed the precision filter. "
+                f"{stats['qualified']} lower-grade signal(s) passed the basic trade gate "
+                "but are intentionally not shown as strong setups.")
+        else:
+            st.warning(
+                "No top-100 coin passed every evidence gate. This is a valid result; "
+                "do not lower the gates just to create a trade.")
+    else:
+        st.markdown("#### Highest-evidence candidates")
+        display = []
+        for index, row in enumerate(ranked, start=1):
+            display.append({
+                "Rank": index,
+                "Coin": row["symbol"],
+                "Grade": row["grade"],
+                "Rank score": row["rank_score"],
+                "Probability": f"{row['probability_pct']:.1f}%",
+                "Conservative bound": f"{row['conservative_probability_pct']:.1f}%",
+                "Expectancy": f"{row['expected_value_r']:+.2f}R",
+                "Samples": row["samples"],
+                "Signal score": f"{row['score']:+.2f}",
+                "Agreement": f"{row['agreement_pct']}%",
+                "Regime": row["regime"],
+                "MTF": row["mtf"],
+                "Entry": f"{row['entry']:,.8g}",
+                "TP": f"{row['target']:,.8g}",
+                "SL": f"{row['stop']:,.8g}",
+            })
+        st.dataframe(pd.DataFrame(display), use_container_width=True, hide_index=True)
+        st.success(
+            "Manual workflow: review the top candidate, run the execution guard, "
+            "record the paper trade, and only consider a Spot LONG if all checks remain valid.")
+
+    if result["rejections"]:
+        st.markdown("#### Why other LONGs were rejected")
+        st.dataframe(pd.DataFrame(
+            [{"Reason": reason, "Count": count} for reason, count in result["rejections"]]
+        ), use_container_width=True, hide_index=True)
+
+
 def about_tab() -> None:
     st.markdown(
         """
@@ -1255,9 +1394,9 @@ def main() -> None:
         st.divider()
         st.caption("Data is cached for 5 minutes. Use Refresh to force a re-fetch.")
 
-    tab_sig, tab_bt, tab_wf, tab_paper, tab_score, tab_about = st.tabs(
+    tab_sig, tab_bt, tab_wf, tab_paper, tab_score, tab_radar, tab_about = st.tabs(
         ["📊 Market overview", "🧪 Scenario review", "🔬 Rolling validation",
-         "📒 Activity log", "📈 Scorecard", "ℹ️ Guide"])
+         "📒 Activity log", "📈 Scorecard", "🎯 Precision radar", "ℹ️ Guide"])
 
     with tab_sig:
         selected_labels = st.session_state.get("coin_select", DEFAULT_ITEM_OPTIONS)
@@ -1302,6 +1441,9 @@ def main() -> None:
 
     with tab_score:
         scorecard_tab()
+
+    with tab_radar:
+        precision_radar_tab(timeframe, limit, use_patterns)
 
     with tab_about:
         about_tab()

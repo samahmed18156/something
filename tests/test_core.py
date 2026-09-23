@@ -14,6 +14,7 @@ from src.quality import _barrier_label, _laplace_probability
 from src.execution import estimate_market_fill, execution_guard
 from src.scorecard import build_scorecard
 from src.order_flow import analyze_liquidity
+from src.radar import rank_candidates
 from src.signals import evaluate
 
 
@@ -171,6 +172,22 @@ class CoreTests(unittest.TestCase):
         result = analyze_liquidity(book, previous=previous, now=1030.0)
         self.assertEqual(result["action"], "NO WALL")
         self.assertEqual(result["cancel_risk"], "HIGH")
+
+    def test_precision_radar_only_returns_qualified_long_candidates(self):
+        rows = [
+            {"symbol": "AAA/USDT", "action": "TRADE", "direction": "LONG",
+             "grade": "A", "conservative_probability_pct": 62,
+             "expected_value_r": 0.35, "agreement_pct": 80, "samples": 60},
+            {"symbol": "BBB/USDT", "action": "TRADE", "direction": "SHORT",
+             "grade": "A", "conservative_probability_pct": 75,
+             "expected_value_r": 0.50, "agreement_pct": 90, "samples": 100},
+            {"symbol": "CCC/USDT", "action": "WAIT", "direction": "LONG",
+             "grade": "WAIT", "conservative_probability_pct": 70,
+             "expected_value_r": 0.60, "agreement_pct": 90, "samples": 100},
+        ]
+        ranked = rank_candidates(rows)
+        self.assertEqual([row["symbol"] for row in ranked], ["AAA/USDT"])
+        self.assertGreater(ranked[0]["rank_score"], 0.0)
 
     def test_enabled_bearish_pattern_vetoes_buy(self):
         n = 300
