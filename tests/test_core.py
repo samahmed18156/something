@@ -11,6 +11,7 @@ from src.data import price_change_pct_24h
 from src.patterns import PatternState
 from src.validation import confidence_report
 from src.quality import _barrier_label, _laplace_probability
+from src.execution import estimate_market_fill, execution_guard
 from src.signals import evaluate
 
 
@@ -77,6 +78,37 @@ class CoreTests(unittest.TestCase):
     def test_quality_probability_is_laplace_smoothed(self):
         self.assertAlmostEqual(_laplace_probability(9, 10), 10 / 12)
         self.assertAlmostEqual(_laplace_probability(0, 0), 0.5)
+
+    def test_execution_fill_requires_available_depth(self):
+        fill = estimate_market_fill([(100.0, 2.0), (101.0, 3.0)], 4.0)
+        self.assertTrue(fill["filled"])
+        self.assertAlmostEqual(fill["average_price"], 100.5)
+        self.assertFalse(estimate_market_fill([(100.0, 2.0)], 3.0)["filled"])
+
+    def test_execution_guard_blocks_stale_signal(self):
+        now = pd.Timestamp("2026-01-03 12:05:00", tz="UTC")
+        result = execution_guard(
+            "BTC/USDT", "LONG", 100.0, 104.0, 98.0,
+            {"action": "TRADE", "probability": 0.7},
+            pd.Timestamp("2026-01-03 10:00:00", tz="UTC"), "1h",
+            book={"source": "test", "bids": [(99.9, 100.0)],
+                  "asks": [(100.1, 100.0)]},
+            account_equity=1000.0, max_delay_minutes=10)
+        self.assertEqual(result["action"], "WAIT")
+        self.assertIn("fresh execution window", " ".join(result["reasons"]))
+
+    def test_execution_guard_accepts_clean_mock_book(self):
+        now = pd.Timestamp.now(tz="UTC")
+        timestamp = now - pd.Timedelta(hours=1) - pd.Timedelta(minutes=5)
+        result = execution_guard(
+            "BTC/USDT", "LONG", 100.0, 104.0, 98.0,
+            {"action": "TRADE", "probability": 0.7}, timestamp, "1h",
+            book={"source": "test", "bids": [(99.99, 100.0)],
+                  "asks": [(100.01, 100.0)]},
+            account_equity=1000.0, max_delay_minutes=10)
+        self.assertEqual(result["action"], "EXECUTION READY")
+        self.assertGreater(result["quantity"], 0)
+        self.assertLess(result["spread_bps"], 12.0)
 
     def test_enabled_bearish_pattern_vetoes_buy(self):
         n = 300

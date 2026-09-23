@@ -176,6 +176,9 @@ Then open http://localhost:8501:
   `paper_trades.json` journal, live P&L vs stop/target, position sizing for a
   1% risk, one-click close
 - **ℹ️ How it works** — every rule, weight and threshold in one place
+- **Execution guard** — on-demand candle freshness, public order-book spread/depth,
+  VWAP fill estimate, risk budget, slippage, portfolio caps, and optional manual
+  phone alert. It never places an order.
 
 ### A-grade quality gate
 

@@ -49,6 +49,7 @@ from src.data import drop_unclosed, fetch_ohlcv
 from src.signals import full_signal
 from src.validation import confidence_report, sensitivity_grid, walk_forward
 from src.quality import assess_signal
+from src.execution import execution_guard, format_alert, send_telegram_alert
 
 st.set_page_config(page_title="Operations Workspace",
                    page_icon="📊", layout="centered",
@@ -386,6 +387,65 @@ def coin_section(symbol: str, timeframe: str, limit: int,
         p4.metric("Stop-loss", f"{plan['sl']:,.6g}", f"{sl_change:+.2f}%")
 
     st.caption("Entry uses the latest completed candle close. TP and SL are ATR-based reference levels, not automatically placed orders.")
+
+    execution_key = f"execution_{symbol}_{timeframe}"
+    if st.button("🔍 Check live execution conditions", key=f"check_{execution_key}",
+                 use_container_width=True):
+        if plan["direction"] == "WAIT":
+            st.session_state[execution_key] = {
+                "action": "WAIT",
+                "reasons": ["No directional plan is available."],
+            }
+        else:
+            records = _load_paper_trades() if "_load_paper_trades" in globals() else []
+            active = [t for t in records if t.get("status") == "OPEN"]
+            risk_pct = float(st.session_state.get("exec_risk_pct", CFG.risk_per_trade_pct))
+            daily_loss = 0.0
+            today = datetime.now(timezone.utc).date()
+            for record in records:
+                if record.get("status") == "OPEN" or record.get("pnl_pct") is None:
+                    continue
+                closed_at = str(record.get("closed_at", ""))
+                if closed_at[:10] == today.isoformat():
+                    daily_loss += max(0.0, -float(record.get("pnl_pct", 0.0)))
+            with st.spinner("Checking candle freshness, spread, depth, and estimated fill…"):
+                st.session_state[execution_key] = execution_guard(
+                    symbol, plan["direction"], plan["entry"], plan["tp"], plan["sl"],
+                    quality, sig.timestamp, timeframe,
+                    account_equity=float(st.session_state.get("exec_equity", 1000.0)),
+                    risk_pct=risk_pct,
+                    max_position_pct=float(st.session_state.get("exec_max_position", 25.0)),
+                    open_risk_pct=len(active) * risk_pct,
+                    daily_loss_pct=daily_loss,
+                    max_open_risk_pct=float(st.session_state.get("exec_max_open_risk", 3.0)),
+                    max_daily_loss_pct=float(st.session_state.get("exec_max_daily_loss", CFG.max_daily_loss_pct)))
+
+    execution = st.session_state.get(execution_key)
+    if execution is not None:
+        st.markdown("#### Execution guard")
+        if execution.get("action") == "EXECUTION READY":
+            st.success("Execution conditions passed. This is still a manual, non-ordering check.")
+        else:
+            st.warning("WAIT — " + " ".join(execution.get("reasons", ["Execution conditions failed."])))
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("Fresh", "YES" if execution.get("fresh") else "NO")
+        e2.metric("Spread", "—" if execution.get("spread_bps") is None else f"{execution['spread_bps']:.1f} bps")
+        e3.metric("Fill slippage", "—" if execution.get("slippage_bps") is None else f"{execution['slippage_bps']:.1f} bps")
+        e4.metric("Est. quantity", "—" if execution.get("quantity") is None else f"{execution['quantity']:.6g}")
+        if execution.get("estimated_fill") is not None:
+            st.caption(
+                f"Estimated VWAP fill: {execution['estimated_fill']:,.6g} · "
+                f"notional: {execution.get('notional', 0):,.2f} · "
+                f"risk budget: {execution.get('risk_amount', 0):,.2f} · "
+                f"source: {execution.get('source', 'public order book')}")
+        if execution.get("action") == "EXECUTION READY":
+            if os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"):
+                if st.button("📱 Send phone alert", key=f"alert_{execution_key}", use_container_width=True):
+                    alert = send_telegram_alert(format_alert(execution, quality))
+                    (st.success if alert["sent"] else st.error)(alert["reason"])
+            else:
+                st.caption("Phone alerts are disabled. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as Render environment variables to enable the manual alert button.")
+
     lc, rc = st.columns(2)
     with lc:
         st.markdown("**Positive / LONG plan**")
@@ -962,6 +1022,18 @@ def main() -> None:
             "Enable event filter", value=False,
             help="When enabled, a fresh reversal event can change a positive "
                  "status to Stable. The default is off because results vary by item.")
+        st.markdown("**Execution guard settings**")
+        st.number_input("Reference account size", min_value=1.0, value=1000.0,
+                        step=100.0, key="exec_equity",
+                        help="Used only for risk and order-book fill estimates; no funds are moved.")
+        st.number_input("Risk per execution (%)", min_value=0.1, max_value=5.0,
+                        value=float(CFG.risk_per_trade_pct), step=0.1, key="exec_risk_pct")
+        st.number_input("Maximum allocation (%)", min_value=1.0, max_value=100.0,
+                        value=25.0, step=1.0, key="exec_max_position")
+        st.number_input("Maximum open risk (%)", min_value=0.5, max_value=20.0,
+                        value=3.0, step=0.5, key="exec_max_open_risk")
+        st.number_input("Daily loss cap (%)", min_value=0.5, max_value=20.0,
+                        value=float(CFG.max_daily_loss_pct), step=0.5, key="exec_max_daily_loss")
         if st.button("🔄 Refresh data", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
