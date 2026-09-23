@@ -26,6 +26,63 @@ BINANCE_HOSTS = [
 USER_AGENT = "crypto-signal-system/1.0"
 _okx: ccxt.okx | None = None
 
+# Symbols that are not useful as directional altcoin choices in the Spot
+# signal board: stablecoins, fiat-like tokens, and leveraged-token suffixes.
+_STABLE_BASES = {
+    "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "DAI", "USDP", "USD1",
+    "USDE", "USDD", "PYUSD", "FRAX", "LUSD", "RLUSD", "UST", "EUR",
+    "TRY", "BRL", "GBP", "UAH", "RUB", "BIDR", "NGN", "ARS", "ZAR",
+}
+_LEVERAGED_SUFFIXES = ("UP", "DOWN", "BULL", "BEAR")
+
+
+def fetch_top_usdt_spot_symbols(limit: int = 100) -> list[str]:
+    """Return the most liquid public Binance USDT altcoin spot pairs.
+
+    Ranking is based on current 24-hour quote volume, not a permanent list.
+    This keeps the menu relevant while excluding stablecoin bases, leveraged
+    tokens, and BTC itself. It intentionally does not change the strategy or
+    enable any automated execution.
+    """
+    errors: list[str] = []
+    for host in BINANCE_HOSTS:
+        try:
+            url = f"https://{host}/api/v3/ticker/24hr"
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=20) as response:
+                rows = json.loads(response.read().decode())
+            candidates = []
+            for row in rows:
+                symbol = str(row.get("symbol", ""))
+                if not symbol.endswith("USDT"):
+                    continue
+                base = symbol[:-4]
+                if (base in _STABLE_BASES or base == "BTC" or base.startswith("1000")
+                        or base.endswith(_LEVERAGED_SUFFIXES)):
+                    continue
+                try:
+                    quote_volume = float(row.get("quoteVolume", 0.0))
+                except (TypeError, ValueError):
+                    quote_volume = 0.0
+                if quote_volume <= 0:
+                    continue
+                candidates.append((quote_volume, f"{base}/USDT"))
+            candidates.sort(reverse=True)
+            output = []
+            seen = set()
+            for _, pair in candidates:
+                if pair not in seen:
+                    output.append(pair)
+                    seen.add(pair)
+                if len(output) >= int(limit):
+                    break
+            if output:
+                return output
+            raise RuntimeError("no eligible USDT spot pairs returned")
+        except Exception as exc:
+            errors.append(f"{host}: {type(exc).__name__}")
+    raise RuntimeError("Top liquid altcoin list unavailable: " + " | ".join(errors))
+
 
 def normalize_utc_index(index: pd.Index) -> pd.DatetimeIndex:
     """Normalize exchange timestamps for pandas 2.x/3.x compatibility.

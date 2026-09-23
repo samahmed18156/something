@@ -45,7 +45,7 @@ from src import indicators as ta
 from src.backtest import run_backtest
 from src.config import (ALL_COINS, ALT_MAJORS, DEFAULT_COINS, DEFAULT_TIMEFRAME,
                         IndicatorSettings, MAJORS, PARENT_TIMEFRAME, TIMEFRAMES, TRENDING)
-from src.data import drop_unclosed, fetch_ohlcv
+from src.data import drop_unclosed, fetch_ohlcv, fetch_top_usdt_spot_symbols
 from src.signals import full_signal
 from src.validation import confidence_report, sensitivity_grid, walk_forward
 from src.quality import assess_signal
@@ -135,6 +135,11 @@ def signal_plan(sig) -> dict:
 def level_text(level: float, entry: float) -> str:
     change = (level / entry - 1.0) * 100.0 if entry else 0.0
     return f"{level:,.6g} ({change:+.2f}%)"
+
+
+@st.cache_data(ttl=3600, show_spinner="Loading the top liquid altcoin list…")
+def top_100_altcoins() -> list[str]:
+    return fetch_top_usdt_spot_symbols(100)
 
 
 @st.cache_data(ttl=300, show_spinner="Loading current data…")
@@ -1146,6 +1151,30 @@ guarantees about future results.
     )
 
 def main() -> None:
+    global ITEM_LABELS, LABEL_TO_SYMBOL, ITEM_OPTIONS, DEFAULT_ITEM_OPTIONS, GROUP_OPTIONS
+
+    # Keep the existing defaults fast, while making a dynamic top-100 liquid
+    # altcoin universe available as an optional selection. The list is ranked
+    # by public 24h USDT quote volume and cached for one hour.
+    universe_error = None
+    try:
+        top100 = top_100_altcoins()
+    except Exception as exc:
+        top100 = []
+        universe_error = type(exc).__name__
+    universe = list(dict.fromkeys(ALL_COINS + top100))
+    ITEM_LABELS = {symbol: symbol for symbol in universe}
+    LABEL_TO_SYMBOL = {label: symbol for symbol, label in ITEM_LABELS.items()}
+    ITEM_OPTIONS = [ITEM_LABELS[symbol] for symbol in universe]
+    DEFAULT_ITEM_OPTIONS = [ITEM_LABELS[symbol] for symbol in MAJORS]
+    GROUP_OPTIONS = {
+        "All coins": [ITEM_LABELS[symbol] for symbol in universe],
+        "Majors": [ITEM_LABELS[symbol] for symbol in MAJORS],
+        "Alt majors": [ITEM_LABELS[symbol] for symbol in ALT_MAJORS],
+        "Trending": [ITEM_LABELS[symbol] for symbol in TRENDING],
+        "Top 100 liquid alts": [ITEM_LABELS[symbol] for symbol in top100],
+    }
+
     st.title("📊 Operations Workspace")
     st.caption(
         "Mobile-ready 1h signal workspace · entry · take-profit · stop-loss · "
@@ -1170,6 +1199,16 @@ def main() -> None:
         if b4.button("🔥 Trending", use_container_width=True):
             st.session_state["coin_select"] = GROUP_OPTIONS["Trending"]
             st.rerun()
+        if st.button("🏆 Top 100 liquid alts", use_container_width=True):
+            if GROUP_OPTIONS["Top 100 liquid alts"]:
+                st.session_state["coin_select"] = GROUP_OPTIONS["Top 100 liquid alts"]
+                st.rerun()
+            else:
+                st.error("Top-100 list is unavailable right now.")
+        if universe_error:
+            st.caption(f"Top-100 list unavailable ({universe_error}); using built-in coins.")
+        else:
+            st.caption("Top-100 list ranks current USDT spot pairs by 24h quote volume. Cached for 1 hour.")
         timeframe = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index(DEFAULT_TIMEFRAME))
         limit = st.slider("Candle limit", 300, 1000, 300, step=100)
         use_patterns = st.checkbox(
@@ -1227,18 +1266,30 @@ def main() -> None:
             st.info("Select at least one item in the sidebar.")
         else:
             st.markdown(f"#### 🌐 Market overview — {len(items)} coins, {timeframe}")
-            board = market_board(tuple(items), timeframe, limit, use_patterns)
-            # Keep the first table narrow enough for a phone screen. The full
-            # diagnostic board remains available below it when needed.
-            mobile_columns = ["Coin", "Status", "Direction", "Entry", "TP", "SL"]
-            st.dataframe(board[mobile_columns], use_container_width=True,
-                         hide_index=True)
-            with st.expander("More market details"):
-                st.dataframe(board, use_container_width=True, hide_index=True)
-            st.divider()
-            for item in items:
-                coin_section(item, timeframe, limit, use_patterns)
+            if len(items) > 20:
+                # Selecting the entire top-100 list should not trigger 100
+                # sequential candle/derivatives requests on a phone. The list
+                # is therefore offered as a menu; the user narrows it to a
+                # manageable shortlist before running the detailed signal scan.
+                st.info(
+                    "Top-100 options loaded. Select roughly 5–10 coins in the "
+                    "sidebar to run the detailed signal scan; scanning all 100 "
+                    "at once would be slow and less useful.")
+                st.dataframe(pd.DataFrame({"Top 100 liquid options": items}),
+                             use_container_width=True, hide_index=True)
+            else:
+                board = market_board(tuple(items), timeframe, limit, use_patterns)
+                # Keep the first table narrow enough for a phone screen. The full
+                # diagnostic board remains available below it when needed.
+                mobile_columns = ["Coin", "Status", "Direction", "Entry", "TP", "SL"]
+                st.dataframe(board[mobile_columns], use_container_width=True,
+                             hide_index=True)
+                with st.expander("More market details"):
+                    st.dataframe(board, use_container_width=True, hide_index=True)
                 st.divider()
+                for item in items:
+                    coin_section(item, timeframe, limit, use_patterns)
+                    st.divider()
 
     with tab_bt:
         backtest_tab()
