@@ -5,3 +5,6 @@ venv/
 .idea/
 .pytest_cache/
 .DS_Store
+
+# Local paper-trading journal; keep only the template in version control.
+paper_trades.json

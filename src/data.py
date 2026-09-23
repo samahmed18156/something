@@ -26,6 +26,26 @@ BINANCE_HOSTS = [
 USER_AGENT = "crypto-signal-system/1.0"
 _okx: ccxt.okx | None = None
 
+
+def normalize_utc_index(index: pd.Index) -> pd.DatetimeIndex:
+    """Normalize exchange timestamps for pandas 2.x/3.x compatibility.
+
+    Newer pandas versions may preserve a seconds/milliseconds datetime unit
+    from API data. Some arithmetic and integer conversions then attempt a
+    lossless unit cast and raise ``Cannot losslessly convert units``. Keeping
+    every candle index as UTC nanoseconds avoids that version-dependent path.
+    """
+    out = pd.DatetimeIndex(index)
+    if out.tz is None:
+        out = out.tz_localize("UTC")
+    else:
+        out = out.tz_convert("UTC")
+    try:
+        return out.as_unit("ns")
+    except (AttributeError, TypeError, ValueError):
+        # Compatibility fallback for older pandas releases.
+        return pd.DatetimeIndex(pd.to_datetime(out, utc=True))
+
 TIMEFRAME_SECONDS = {
     "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
     "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800,
@@ -116,6 +136,10 @@ def fetch_ohlcv_paged(symbol: str, timeframe: str = "4h",
 
     df = _to_df(rows).sort_index()
     df = df[~df.index.duplicated(keep="last")]
+    # Keep the same closed-candle contract as fetch_ohlcv(). The extra rows
+    # requested above ensure that removing the forming candle does not leave
+    # callers with fewer candles than requested.
+    df = drop_unclosed(df, timeframe)
     return df.tail(int(total))
 
 
@@ -128,7 +152,9 @@ def _to_df(raw: list) -> pd.DataFrame:
     for col in ("open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col])
     df["datetime"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
-    return df.set_index("datetime")[["open", "high", "low", "close", "volume"]]
+    out = df.set_index("datetime")[["open", "high", "low", "close", "volume"]]
+    out.index = normalize_utc_index(out.index)
+    return out
 
 
 def drop_unclosed(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
@@ -140,10 +166,56 @@ def drop_unclosed(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     tf_s = TIMEFRAME_SECONDS.get(timeframe)
     if tf_s is None or df.empty:
         return df
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df = df.copy()
+        df.index = normalize_utc_index(df.index)
+    else:
+        normalized = normalize_utc_index(df.index)
+        if not df.index.equals(normalized):
+            df = df.copy()
+            df.index = normalized
     last_close = int(df.index[-1].timestamp()) + tf_s
     if last_close > int(pd.Timestamp.now(tz="UTC").timestamp()):
         return df.iloc[:-1]
     return df
+
+
+def price_change_pct_24h(df: pd.DataFrame,
+                         now: pd.Timestamp | None = None) -> float | None:
+    """Return the percentage change from the last candle at least 24h ago.
+
+    ``searchsorted(target)`` returns the first candle *after* the target. That
+    is not the candle that was available 24 hours ago and is especially wrong
+    on the 1d timeframe. Use the last candle at or before the target instead.
+    The optional ``now`` argument makes this calculation deterministic in
+    unit tests.
+    """
+    if df is None or len(df) < 2:
+        return None
+
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    else:
+        now = now.tz_convert("UTC")
+
+    index = pd.DatetimeIndex(df.index)
+    if index.tz is None:
+        index = index.tz_localize("UTC")
+    else:
+        index = index.tz_convert("UTC")
+
+    target = now - pd.Timedelta(hours=24)
+    old_i = index.searchsorted(target, side="right") - 1
+    last_i = index.searchsorted(now, side="right") - 1
+    if old_i < 0 or last_i < 0 or old_i >= len(df) or last_i >= len(df):
+        return None
+
+    old_close = float(df["close"].iloc[old_i])
+    last_close = float(df["close"].iloc[last_i])
+    if old_close == 0:
+        return None
+    return (last_close / old_close - 1.0) * 100.0
 
 
 def fetch_derivatives(symbol: str, df: pd.DataFrame | None = None) -> dict | None:
@@ -169,7 +241,7 @@ def fetch_derivatives(symbol: str, df: pd.DataFrame | None = None) -> dict | Non
             funding = float(json.loads(resp.read().decode())["lastFundingRate"])
         try:
             req = urllib.request.Request(
-                f"https://fapi.binance.com/fapi/v1/openInterestHist"
+                f"https://fapi.binance.com/futures/data/openInterestHist"
                 f"?symbol={pair}&period=1h&limit=25",
                 headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -198,13 +270,7 @@ def fetch_derivatives(symbol: str, df: pd.DataFrame | None = None) -> dict | Non
     if funding is None:
         return None
 
-    price_24h = None
-    if df is not None and len(df) > 2:
-        now = pd.Timestamp.now(tz="UTC")
-        target = now - pd.Timedelta(hours=24)
-        i = min(df.index.searchsorted(target), len(df) - 1)
-        if i >= 0 and df.index[i] <= now:
-            price_24h = (float(df["close"].iloc[-1]) / float(df["close"].iloc[i]) - 1.0) * 100.0
+    price_24h = price_change_pct_24h(df)
 
     return {
         "funding_pct": funding * 100.0,

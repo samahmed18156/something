@@ -106,6 +106,19 @@ class IndicatorSettings:
     pattern_lookback: int = 1       # closed candles scanned for a fresh veto
                                     # pattern (1 = last closed candle only)
 
+    # --- signal quality filters ---
+    # Avoid thin data and extreme volatility where indicator signals are less
+    # reliable. A value of 0 disables the corresponding bound.
+    min_volume_ratio: float = 0.40  # current volume / rolling median volume
+    min_atr_pct: float = 0.05       # minimum ATR as percentage of value
+    max_atr_pct: float = 12.0       # maximum ATR as percentage of value
+
+    # --- risk controls used by the research simulator ---
+    signal_cooldown_bars: int = 3
+    risk_per_trade_pct: float = 1.0
+    max_position_pct: float = 100.0
+    max_daily_loss_pct: float = 3.0
+
 
 # Weights per indicator family for the regime filter.
 TREND_FAMILY = {"macd", "ema", "supertrend", "adx", "roc"}

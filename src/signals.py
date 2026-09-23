@@ -41,7 +41,8 @@ from .config import (BUY, MIN_CONFIRMATIONS, MTF_DEFAULT_BY_TF,
                      PARENT_EMA_FAST, PARENT_EMA_SLOW, PARENT_TIMEFRAME, SELL,
                      STRONG_BUY, STRONG_SELL, TREND_FAMILY, WEIGHTS,
                      IndicatorSettings, CANDLE_LIMIT)
-from .data import TIMEFRAME_SECONDS, drop_unclosed, fetch_derivatives, fetch_ohlcv
+from .data import (TIMEFRAME_SECONDS, drop_unclosed, fetch_derivatives,
+                   fetch_ohlcv, normalize_utc_index)
 from .patterns import PatternState, describe_patterns
 
 # Display order of the 12 core indicators (ATR keeps its slot, weight 0).
@@ -88,6 +89,9 @@ class Signal:
     deriv: dict | None = None
     # candlestick pattern state (entry-quality layer, not a vote)
     patterns: PatternState | None = None
+    pattern_vetoed: bool = False
+    filter_blocked: bool = False
+    filter_reasons: list[str] = field(default_factory=list)
 
 
 # ------------------------------------------------------------- core votes
@@ -221,6 +225,31 @@ def regime_mults(ind: pd.DataFrame, i: int, cfg: IndicatorSettings):
     return weights, float(chop), label
 
 
+def quality_filters(ind: pd.DataFrame, i: int, cfg: IndicatorSettings) -> tuple[bool, list[str]]:
+    """Check data-quality gates for a new directional signal.
+
+    These filters deliberately do not add votes. They only prevent a new
+    directional status when the data is too thin or volatility is outside the
+    configured operating range. Missing quality columns are treated as
+    unavailable rather than automatically blocking older/custom data frames.
+    """
+    r = ind.iloc[i]
+    reasons: list[str] = []
+
+    volume_ratio = r.get("volume_ratio", np.nan)
+    if (cfg.min_volume_ratio > 0 and not pd.isna(volume_ratio)
+            and volume_ratio < cfg.min_volume_ratio):
+        reasons.append("activity below baseline")
+
+    atr_pct = r.get("atr_pct", np.nan)
+    if cfg.min_atr_pct > 0 and not pd.isna(atr_pct) and atr_pct < cfg.min_atr_pct:
+        reasons.append("variation below minimum")
+    if cfg.max_atr_pct > 0 and not pd.isna(atr_pct) and atr_pct > cfg.max_atr_pct:
+        reasons.append("variation above maximum")
+
+    return not reasons, reasons
+
+
 def score_of(votes: dict[str, int], weights: dict[str, float] | None = None) -> float:
     """
     Weighted average of the votes that fired, normalized to [-1, +1].
@@ -261,14 +290,19 @@ def parent_mtf_array(df: pd.DataFrame, df_parent: pd.DataFrame | None,
     if tf_s is None or len(df_parent) < PARENT_EMA_SLOW + 5:
         return arr
 
+    # Normalize before timestamp arithmetic so pandas 2.x/3.x do not try a
+    # lossy unit conversion on exchange indexes with seconds precision.
+    parent_index = normalize_utc_index(df_parent.index)
+    signal_index = normalize_utc_index(df.index)
+
     c = df_parent["close"]
     fast = ta.ema(c, PARENT_EMA_FAST)
     slow = ta.ema(c, PARENT_EMA_SLOW)
     trend = pd.Series(np.where(fast > slow, 1, -1), index=df_parent.index)
     trend = trend.where(slow.notna(), 0).to_numpy()
 
-    parent_close_ts = (df_parent.index + pd.Timedelta(seconds=tf_s)).asi8 // 1_000_000
-    sig_ts = df.index.asi8 // 1_000_000
+    parent_close_ts = (parent_index + pd.Timedelta(seconds=tf_s)).view("int64") // 1_000_000
+    sig_ts = signal_index.view("int64") // 1_000_000
     j = np.searchsorted(parent_close_ts, sig_ts, side="right") - 1
     valid = j >= 0
     arr[valid] = trend[j[valid]]
@@ -296,6 +330,8 @@ def _deriv_reasons(deriv: dict, cfg: IndicatorSettings):
     px = deriv.get("price_chg_24h_pct")
     if oi is None:
         o_reason = "OI history unavailable on this source"
+    elif px is None:
+        o_reason = "Price change unavailable"
     elif abs(oi) < cfg.oi_deadband_pct:
         o_reason = "OI change below deadband"
     elif oi > 0 and px > 0:
@@ -313,7 +349,8 @@ def _deriv_reasons(deriv: dict, cfg: IndicatorSettings):
 def evaluate(df: pd.DataFrame, ind: pd.DataFrame, cfg: IndicatorSettings | None = None,
              symbol: str = "", timeframe: str = "", deriv: dict | None = None,
              mtf_trend: int = 0, mtf_timeframe: str = "",
-             patterns: PatternState | None = None) -> Signal:
+             patterns: PatternState | None = None,
+             use_patterns: bool = False) -> Signal:
     """
     Build the full signal for the last candle:
     12 indicator votes + (optional) 2 derivatives votes,
@@ -430,6 +467,25 @@ def evaluate(df: pd.DataFrame, ind: pd.DataFrame, cfg: IndicatorSettings | None 
     else:
         final = "NEUTRAL"
 
+    # ---------------------------------------------- data-quality layer
+    filters_ok, filter_reasons = quality_filters(ind, i, cfg)
+    filter_blocked = bool(not filters_ok and final != "NEUTRAL")
+    if filter_blocked:
+        final = "NEUTRAL"
+
+    # ----------------------------------------- candlestick entry-quality layer
+    # This veto is opt-in because the initial walk-forward evidence was mixed.
+    # When enabled, a fresh bearish pattern blocks only new long signals; it
+    # does not turn a bearish signal into a buy or affect the score.
+    pattern_vetoed = bool(
+        use_patterns
+        and patterns is not None
+        and patterns.bearish
+        and final in ("BUY", "STRONG BUY")
+    )
+    if pattern_vetoed:
+        final = "NEUTRAL"
+
     # ----------------------------------------------- MTF confluence layer
     mtf_blocked = False
     if mtf_trend == -1 and final in ("BUY", "STRONG BUY"):
@@ -452,19 +508,24 @@ def evaluate(df: pd.DataFrame, ind: pd.DataFrame, cfg: IndicatorSettings | None 
         atr=atr_v, atr_pct=atr_pct,
         regime=regime, chop=chop,
         mtf_timeframe=mtf_timeframe, mtf_trend=mtf_trend, mtf_blocked=mtf_blocked,
-        deriv=deriv, patterns=patterns,
+        deriv=deriv, patterns=patterns, pattern_vetoed=pattern_vetoed,
+        filter_blocked=filter_blocked, filter_reasons=filter_reasons,
     )
 
 
 # --------------------------------------------------------- full pipeline
 def full_signal(symbol: str, timeframe: str, limit: int = CANDLE_LIMIT,
                 use_mtf: bool | None = None, use_deriv: bool = True,
-                cfg: IndicatorSettings | None = None) -> Signal:
+                cfg: IndicatorSettings | None = None,
+                use_patterns: bool = False) -> Signal:
     """
     Live signal pipeline:
       fetch candles (drop the still-forming one) → compute indicators →
       fetch parent-timeframe trend (MTF) → fetch derivatives sentiment →
       evaluate with all filter layers.
+
+    ``use_patterns`` is opt-in, matching the default used by the backtester.
+    When enabled, a fresh bearish candlestick pattern vetoes a new long signal.
 
     use_mtf=None → per-timeframe default from MTF_DEFAULT_BY_TF
     (walk-forward evidence: on for 15m/1h/4h, off for 1d).
@@ -487,4 +548,4 @@ def full_signal(symbol: str, timeframe: str, limit: int = CANDLE_LIMIT,
 
     return evaluate(df, ind, cfg, symbol, timeframe, deriv=deriv,
                     mtf_trend=mtf_trend, mtf_timeframe=mtf_timeframe,
-                    patterns=patterns)
+                    patterns=patterns, use_patterns=use_patterns)

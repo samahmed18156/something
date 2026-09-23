@@ -90,8 +90,9 @@ shooting star, doji, three white soldiers, three black crows, morning star,
 evening star) detected on the **last closed candle** only.
 
 Patterns are **not a 15th vote** — they are an entry-quality filter:
-a fresh bearish pattern *vets out* a new long entry, a bullish pattern tags
-the live signal as "confirmed" (display only). The **⚖️ A/B** button in the
+a fresh bearish pattern vetoes a new long entry when the filter is enabled,
+a bullish pattern tags the live signal as "confirmed" (display only). The
+**⚖️ A/B** button in the
 Walk-forward tab runs the identical validation with the filter ON and OFF
 and reports the OOS delta, so each coin/timeframe decides for itself whether
 the filter earns its keep. Toggleable in the Backtest / Walk-forward tabs.
@@ -135,6 +136,11 @@ layer (no free historical feed) — it can shift the score by at most 2 votes.
      working directory = project root
    - **Dashboard** — type *Python*, module name `streamlit`,
      parameters `run app.py`, working directory = project root
+
+   The dashboard can also be started by running `app.py` directly; it now
+   forwards to Streamlit automatically instead of producing
+   `missing ScriptRunContext` warnings. The module configuration above is
+   still the recommended PyCharm setup.
 5. Press **Run ▶**
 
 ## Usage
@@ -166,8 +172,9 @@ Then open http://localhost:8501:
   adjustable entry/exit thresholds and fees
 - **🔬 Walk-forward** — out-of-sample validation + parameter-sensitivity
   heatmap
-- **📒 Paper trades** — log the trades you actually act on (`paper_trades.json`),
-  live P&L vs stop/target, position sizing for a 1% risk, one-click close
+- **📒 Paper trades** — log the trades you actually act on in the local
+  `paper_trades.json` journal, live P&L vs stop/target, position sizing for a
+  1% risk, one-click close
 - **ℹ️ How it works** — every rule, weight and threshold in one place
 
 ## Configuration
@@ -194,7 +201,8 @@ crypto_signal_system/
 ├── main.py               # CLI runner (reports, live watch, JSON)
 ├── app.py                # Streamlit dashboard (signals, backtest,
 │                         #   walk-forward validation, paper trades, docs)
-├── paper_trades.json     # your logged trades (tracked live in the dashboard)
+├── paper_trades.example.json # empty journal template
+├── paper_trades.json     # local journal, ignored by git
 ├── requirements.txt
 ├── README.md
 └── src/
@@ -212,7 +220,8 @@ crypto_signal_system/
 
 - **Closed candles only** — the still-forming candle is dropped before
   signaling, and backtests only use parent-TF candles that were already
-  closed at each signal bar (no look-ahead bias).
+  closed at each signal bar (no look-ahead bias). Backtest signals are filled
+  at the next candle open rather than the signal candle close.
 - **Same engine everywhere** — live, backtest and validation share one code
   path (`row_votes` + `regime_mults` + `score_of`).
 - **Graceful degradation** — if a derivatives feed is unreachable, those two
@@ -237,3 +246,25 @@ Educational software. Technical indicators are **lagging**, derivatives
 sentiment is a crowd gauge, and consensus is **not** a guarantee of profit —
 fees, slippage and regime changes matter. Validate with the walk-forward tab
 before believing any number. Nothing in this project is financial advice.
+
+## Accuracy and risk enhancements
+
+The research engine now includes several safeguards beyond adding more indicators:
+
+- **Confidence panel** — the dashboard estimates historical results after 1, 3,
+  and 5 completed intervals, including sample count, positive-result rate,
+  average/median change, and efficiency. These are descriptive statistics,
+  not guarantees.
+- **Quality filters** — new directional statuses can be blocked when recent
+  activity is too far below its rolling median or variation is outside the
+  configured range (`min_volume_ratio`, `min_atr_pct`, `max_atr_pct`).
+- **Realistic execution** — backtests use the next interval's open and include
+  both processing cost and configurable execution variance/slippage.
+- **Risk-based allocation** — simulations size each event from the ATR boundary,
+  cap allocation, enforce a cooldown, and stop new entries after the daily loss
+  limit is reached.
+- **Robust validation** — rolling validation reports positive unseen sections,
+  worst unseen section, average results, and sensitivity across thresholds.
+
+Risk settings are in `IndicatorSettings`; the Scenario review and Rolling
+validation tabs expose them without changing the underlying analysis rules.

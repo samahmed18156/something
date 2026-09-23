@@ -203,13 +203,24 @@ def choppiness(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """
     Choppiness Index (CHOP): 100 = fully random/choppy, 10 = perfect trend.
 
+    The standard formula uses the rolling sum of True Range, not a rolling
+    sum of already-smoothed ATR values. This keeps the familiar 38.2/61.8
+    interpretation used by the regime filter.
+
     < 38.2 trending · > 61.8 choppy (common trading cutoffs).
     """
-    atr_sum = atr(df, period).rolling(period).sum()
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev_close).abs(),
+        (df["low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    tr_sum = tr.rolling(period).sum()
     hh = df["high"].rolling(period).max()
     ll = df["low"].rolling(period).min()
     rng = (hh - ll).replace(0.0, np.nan)
-    return 100.0 * np.log(atr_sum / rng) / np.log(period)
+    ratio = (tr_sum / rng).replace(0.0, np.nan)
+    return 100.0 * np.log(ratio) / np.log(period)
 
 
 # ------------------------------------------------------------- compute all
@@ -219,6 +230,11 @@ def compute_all(df: pd.DataFrame, cfg: IndicatorSettings | None = None) -> pd.Da
     ind = pd.DataFrame(index=df.index)
     ind["close"] = df["close"]
     ind["volume"] = df["volume"]
+    # Quality-filter inputs: compare current activity with a rolling median
+    # rather than a mean so one abnormal spike does not distort the baseline.
+    ind["volume_median"] = df["volume"].rolling(20).median()
+    ind["volume_ratio"] = (df["volume"] / ind["volume_median"]
+                            .replace(0.0, np.nan))
 
     ind["rsi"] = rsi(df["close"], cfg.rsi_period)
     ind = ind.join(macd(df["close"], cfg.macd_fast, cfg.macd_slow, cfg.macd_signal))

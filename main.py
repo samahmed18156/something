@@ -42,9 +42,11 @@ def fmt_price(x: float) -> str:
     return f"{x:.6f}".rstrip("0").rstrip(".")
 
 
-def analyze(symbol: str, timeframe: str, use_mtf: bool | None, use_deriv: bool):
+def analyze(symbol: str, timeframe: str, use_mtf: bool | None,
+            use_deriv: bool, use_patterns: bool = False):
     return full_signal(symbol, timeframe, CANDLE_LIMIT,
-                       use_mtf=use_mtf, use_deriv=use_deriv)
+                       use_mtf=use_mtf, use_deriv=use_deriv,
+                       use_patterns=use_patterns)
 
 
 def print_report(sig) -> None:
@@ -59,8 +61,10 @@ def print_report(sig) -> None:
     p = sig.patterns
     if p and p.names:
         pat_note = ", ".join(p.names)
-        if p.bearish:
+        if p.bearish and sig.pattern_vetoed:
             pat_note += "  ⛔ LONG ENTRY VETOED (bearish pattern on last closed candle)"
+        elif p.bearish:
+            pat_note += "  ⚠ bearish pattern detected (pattern filter is off)"
         elif p.bullish:
             pat_note += "  ✅ long entry confirmed (bullish pattern)"
         else:
@@ -104,6 +108,9 @@ def sig_to_dict(sig) -> dict:
         "mtf_timeframe": sig.mtf_timeframe,
         "mtf_trend": sig.mtf_trend,
         "mtf_blocked": sig.mtf_blocked,
+        "pattern_vetoed": sig.pattern_vetoed,
+        "filter_blocked": sig.filter_blocked,
+        "filter_reasons": sig.filter_reasons,
         "derivatives": sig.deriv,
         "patterns": (vars(sig.patterns) if sig.patterns else None),
         "stop_long": sig.stop_long,
@@ -130,6 +137,8 @@ def main() -> None:
                     help="force the higher-TF filter OFF")
     ap.add_argument("--no-deriv", action="store_true",
                     help="disable the funding/OI derivatives sentiment")
+    ap.add_argument("--patterns", action="store_true",
+                    help="enable the bearish candlestick entry veto")
     ap.add_argument("--watch", type=int, default=0, metavar="SECONDS",
                     help="live mode: re-run every N seconds (Ctrl+C to stop)")
     ap.add_argument("--json", action="store_true",
@@ -150,7 +159,8 @@ def main() -> None:
                 for s in args.coins:
                     try:
                         out.append(sig_to_dict(
-                            analyze(s, args.timeframe, use_mtf, not args.no_deriv)))
+                            analyze(s, args.timeframe, use_mtf, not args.no_deriv,
+                                    args.patterns)))
                     except Exception as e:  # keep going if one coin fails
                         out.append({"symbol": s, "error": str(e)})
                 print(json.dumps(out, indent=2, default=str))
@@ -158,7 +168,7 @@ def main() -> None:
                 for s in args.coins:
                     try:
                         print_report(analyze(s, args.timeframe, use_mtf,
-                                             not args.no_deriv))
+                                             not args.no_deriv, args.patterns))
                     except Exception as e:
                         print(f" {s}: ERROR {e}\n")
 
