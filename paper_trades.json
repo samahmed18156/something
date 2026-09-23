@@ -1,0 +1,24 @@
+{
+  "trades": [
+    {
+      "id": "2026-09-22-01",
+      "coin": "SOL/USDT",
+      "timeframe": "4h",
+      "direction": "LONG",
+      "status": "OPEN",
+      "opened_at": "2026-09-22 22:05 UTC",
+      "entry": 118.26,
+      "stop": 114.98,
+      "target": 122.64,
+      "score": 0.609,
+      "agreement_pct": 67,
+      "regime": "TRENDING (CHOP 34.0)",
+      "mtf": "1d UP",
+      "pattern": "none",
+      "closed_at": null,
+      "exit_price": null,
+      "exit_reason": null,
+      "pnl_pct": null
+    }
+  ]
+}
