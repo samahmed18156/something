@@ -12,6 +12,7 @@ from src.patterns import PatternState
 from src.validation import confidence_report
 from src.quality import _barrier_label, _laplace_probability
 from src.execution import estimate_market_fill, execution_guard
+from src.scorecard import build_scorecard
 from src.signals import evaluate
 
 
@@ -109,6 +110,27 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["action"], "EXECUTION READY")
         self.assertGreater(result["quantity"], 0)
         self.assertLess(result["spread_bps"], 12.0)
+
+    def test_scorecard_excludes_open_records_and_calculates_drawdown(self):
+        trades = [
+            {"id": "1", "status": "CLOSED", "coin": "BTC/USDT",
+             "timeframe": "1h", "direction": "LONG", "entry": 100,
+             "stop": 98, "pnl_pct": 2.0, "quality_grade": "A",
+             "regime": "TRENDING", "closed_at": "2026-01-01"},
+            {"id": "2", "status": "CLOSED", "coin": "BTC/USDT",
+             "timeframe": "1h", "direction": "LONG", "entry": 100,
+             "stop": 98, "pnl_pct": -1.0, "quality_grade": "B",
+             "regime": "CHOPPY", "closed_at": "2026-01-02"},
+            {"id": "3", "status": "OPEN", "coin": "ETH/USDT",
+             "timeframe": "1h", "direction": "LONG", "entry": 100,
+             "stop": 98, "pnl_pct": None},
+        ]
+        result = build_scorecard(trades)
+        self.assertEqual(result["summary"]["trades"], 2)
+        self.assertEqual(result["summary"]["wins"], 1)
+        self.assertEqual(result["summary"]["losses"], 1)
+        self.assertEqual(len(result["by_coin"]), 1)
+        self.assertLess(result["summary"]["max_drawdown_pct"], 0.0)
 
     def test_enabled_bearish_pattern_vetoes_buy(self):
         n = 300

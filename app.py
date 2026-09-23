@@ -53,6 +53,7 @@ from src.execution import execution_guard, format_alert, send_telegram_alert
 from src.broker import BinanceSpotBroker
 from src.live_trading import approve_and_submit, make_plan
 from src.trading_store import TradeStore
+from src.scorecard import build_scorecard
 
 st.set_page_config(page_title="Operations Workspace",
                    page_icon="📊", layout="centered",
@@ -990,6 +991,46 @@ def paper_tab() -> None:
         "Records are for personal monitoring and remain stored locally.")
 
 
+def scorecard_tab() -> None:
+    st.markdown(
+        "Closed manual/paper records only. This panel measures what happened "
+        "after entry, including P&L, R-multiple, drawdown, losing streak, and "
+        "breakdowns by coin, quality grade, and regime.")
+    records = _load_paper_trades()
+    scorecard = build_scorecard(records)
+    stats = scorecard["summary"]
+    if stats["trades"] == 0:
+        st.info("No completed records yet. Add and complete paper records in the Activity Log.")
+        return
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Closed records", str(stats["trades"]))
+    m2.metric("Win rate", f"{stats['win_rate_pct']:.1f}%")
+    m3.metric("Total return", f"{stats['total_return_pct']:+.2f}%")
+    m4, m5, m6 = st.columns(3)
+    m4.metric("Expectancy", f"{stats['expectancy_r']:+.2f}R")
+    m5.metric("Max drawdown", f"{stats['max_drawdown_pct']:.2f}%")
+    m6.metric("Longest losing streak", str(stats["max_losing_streak"]))
+    st.caption(
+        f"Wins {stats['wins']} · losses {stats['losses']} · breakeven {stats['breakeven']} · "
+        f"average P&L {stats['average_pnl_pct']:+.2f}% · "
+        + (f"average slippage {stats['average_slippage_bps']:.1f} bps" if stats["average_slippage_bps"] is not None else "slippage not recorded yet"))
+
+    st.markdown("#### Recent completed records")
+    st.dataframe(scorecard["recent"], use_container_width=True, hide_index=True)
+    csv = scorecard["recent"].to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download recent scorecard CSV", csv,
+                       file_name="signal_scorecard.csv", mime="text/csv",
+                       use_container_width=True)
+
+    for title, key in (("By coin", "by_coin"), ("By quality grade", "by_grade"),
+                       ("By market regime", "by_regime"), ("By timeframe", "by_timeframe")):
+        table = scorecard[key]
+        if not table.empty:
+            st.markdown(f"#### {title}")
+            st.dataframe(table, use_container_width=True, hide_index=True)
+
+
 def about_tab() -> None:
     st.markdown(
         """
@@ -1105,9 +1146,9 @@ def main() -> None:
         st.divider()
         st.caption("Data is cached for 5 minutes. Use Refresh to force a re-fetch.")
 
-    tab_sig, tab_bt, tab_wf, tab_paper, tab_about = st.tabs(
+    tab_sig, tab_bt, tab_wf, tab_paper, tab_score, tab_about = st.tabs(
         ["📊 Market overview", "🧪 Scenario review", "🔬 Rolling validation",
-         "📒 Activity log", "ℹ️ Guide"])
+         "📒 Activity log", "📈 Scorecard", "ℹ️ Guide"])
 
     with tab_sig:
         selected_labels = st.session_state.get("coin_select", DEFAULT_ITEM_OPTIONS)
@@ -1137,6 +1178,9 @@ def main() -> None:
 
     with tab_paper:
         paper_tab()
+
+    with tab_score:
+        scorecard_tab()
 
     with tab_about:
         about_tab()
