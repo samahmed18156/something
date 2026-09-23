@@ -194,6 +194,19 @@ signal is marked **WAIT** when there are too few historical samples, the
 conservative bound is weak, expected value is not positive, agreement is low,
 or the regime/quality filters are unfavorable.
 
+### Manual Binance Spot execution foundation
+
+`src/broker.py`, `src/live_trading.py`, `src/trading_store.py`, and `worker.py`
+provide a manual-approval/testnet-first execution foundation. Spot execution
+accepts LONG plans only; SHORT plans require a separate futures adapter. The
+worker reconciles protected orders and cancels a sibling exit after one closes.
+Live submission is disabled unless all of these are deliberately configured in
+Render: `BINANCE_API_KEY`, `BINANCE_API_SECRET`, `BINANCE_SANDBOX`,
+`TRADING_ENABLED`, `TRADING_MODE=manual`, and
+`LIVE_TRADING_CONFIRMATION=I UNDERSTAND`. Never enable withdrawals on the API
+key. Use a persistent disk or Postgres for `TRADING_DB_PATH` before trusting
+live state across restarts.
+
 ## Configuration
 
 Everything lives in **`src/config.py`**:

@@ -50,6 +50,9 @@ from src.signals import full_signal
 from src.validation import confidence_report, sensitivity_grid, walk_forward
 from src.quality import assess_signal
 from src.execution import execution_guard, format_alert, send_telegram_alert
+from src.broker import BinanceSpotBroker
+from src.live_trading import approve_and_submit, make_plan
+from src.trading_store import TradeStore
 
 st.set_page_config(page_title="Operations Workspace",
                    page_icon="📊", layout="centered",
@@ -445,6 +448,46 @@ def coin_section(symbol: str, timeframe: str, limit: int,
                     (st.success if alert["sent"] else st.error)(alert["reason"])
             else:
                 st.caption("Phone alerts are disabled. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as Render environment variables to enable the manual alert button.")
+
+        if (execution.get("action") == "EXECUTION READY"
+                and quality.get("action") == "TRADE"
+                and plan["direction"] == "LONG"):
+            with st.expander("🔐 Binance Spot manual approval", expanded=False):
+                st.caption(
+                    "This creates a pending plan first. It does not submit an order until "
+                    "you explicitly approve it and the broker safety gates are open.")
+                plan_key = f"plan_{execution_key}"
+                if st.button("Create pending order plan", key=f"create_{execution_key}",
+                             use_container_width=True):
+                    try:
+                        payload = make_plan(
+                            symbol, timeframe, plan["direction"], plan["entry"],
+                            plan["tp"], plan["sl"], quality, execution)
+                        plan_id = TradeStore().create_plan(payload)
+                        st.session_state[plan_key] = plan_id
+                        st.success(f"Pending plan created: {plan_id[:12]}")
+                    except Exception as exc:
+                        st.error(f"Could not create pending plan: {exc}")
+                current_plan_id = st.session_state.get(plan_key)
+                if current_plan_id:
+                    broker = BinanceSpotBroker()
+                    status = broker.status()
+                    st.json({
+                        "plan_id": current_plan_id,
+                        "broker": "Binance Spot",
+                        "sandbox": status["sandbox"],
+                        "credentials_configured": status["configured"],
+                        "manual_gate_open": status["submit_gate_open"],
+                        "withdrawals": status["withdrawals"],
+                    })
+                    if st.button("✅ Approve and submit order", key=f"approve_{execution_key}",
+                                 type="primary", use_container_width=True):
+                        try:
+                            result = approve_and_submit(current_plan_id, TradeStore(), broker)
+                            st.success("Order submitted and protection sequence completed.")
+                            st.json(result)
+                        except Exception as exc:
+                            st.error(f"Order was not submitted: {exc}")
 
     lc, rc = st.columns(2)
     with lc:
