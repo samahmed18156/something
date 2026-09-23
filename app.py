@@ -1078,15 +1078,22 @@ def main() -> None:
         st.number_input("Daily loss cap (%)", min_value=0.5, max_value=20.0,
                         value=float(CFG.max_daily_loss_pct), step=0.5, key="exec_max_daily_loss")
         if st.button("🔐 Check Binance testnet connection", use_container_width=True):
+            broker = BinanceSpotBroker()
+            st.session_state["broker_status"] = broker.status()
             try:
-                broker = BinanceSpotBroker()
                 st.session_state["broker_connection_result"] = broker.check_connection()
                 st.session_state["broker_connection_error"] = None
             except Exception as exc:
                 st.session_state["broker_connection_result"] = None
                 st.session_state["broker_connection_error"] = type(exc).__name__
+        broker_status = st.session_state.get("broker_status")
         connection = st.session_state.get("broker_connection_result")
         connection_error = st.session_state.get("broker_connection_error")
+        if broker_status:
+            st.caption(
+                f"Configuration received by this app: keys present = "
+                f"{broker_status['configured']} · sandbox = {broker_status['sandbox']} · "
+                f"trading enabled = {broker_status['trading_enabled']}")
         if connection:
             st.success(
                 f"Testnet connected · free USDT: {connection['free_usdt']:,.2f}")
