@@ -1077,6 +1077,21 @@ def main() -> None:
                         value=3.0, step=0.5, key="exec_max_open_risk")
         st.number_input("Daily loss cap (%)", min_value=0.5, max_value=20.0,
                         value=float(CFG.max_daily_loss_pct), step=0.5, key="exec_max_daily_loss")
+        if st.button("🔐 Check Binance testnet connection", use_container_width=True):
+            try:
+                broker = BinanceSpotBroker()
+                st.session_state["broker_connection_result"] = broker.check_connection()
+                st.session_state["broker_connection_error"] = None
+            except Exception as exc:
+                st.session_state["broker_connection_result"] = None
+                st.session_state["broker_connection_error"] = type(exc).__name__
+        connection = st.session_state.get("broker_connection_result")
+        connection_error = st.session_state.get("broker_connection_error")
+        if connection:
+            st.success(
+                f"Testnet connected · free USDT: {connection['free_usdt']:,.2f}")
+        elif connection_error:
+            st.error(f"Testnet connection failed: {connection_error}")
         if st.button("🔄 Refresh data", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
